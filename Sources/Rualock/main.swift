@@ -113,13 +113,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
         let what = minutes == 1 ? "1 minute" : "\(Int(minutes)) minutes"
         System.authenticate("pause Rualock for \(what)") { [weak self] ok in
             self?.authenticating = false
-            if ok { Pause.start(minutes: minutes) }
+            if ok {
+                Pause.start(minutes: minutes)
+                Diagnostics.shared.event("pause", ["minutes": minutes])
+            }
         }
     }
 
     func resume() {
         Pause.clear()
         note("resumed")
+        Diagnostics.shared.event("pause_ended", ["by": "resume"])
     }
 
     /// The menu used by the menu bar icon and by right-clicking the light next to the camera.
@@ -160,6 +164,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         allowQuit ? .terminateNow : .terminateCancel
     }
+}
+
+// `Rualock --report [days]` summarises the diagnostics (see Diagnostics.swift).
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--report" {
+    let days = CommandLine.arguments.count > 2 ? Int(CommandLine.arguments[2]) ?? 7 : 7
+    exit(Report.run(days: days))
 }
 
 // `Rualock --embed image.png` prints the embedding of the largest face, for checking the pipeline.

@@ -24,7 +24,13 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
     }()
     private var keep: [NSWindowController] = []
 
-    init(directory: URL) { dir = directory }
+    init(directory: URL) {
+        dir = directory
+        // Render with default settings whatever yours are (the argument domain wins, and isn't saved).
+        UserDefaults.standard.setVolatileDomain([
+            "lockDelay": 8.0, "requireBlink": true, "showIsland": true, "showMenuBarIcon": true, "recordDiagnostics": true,
+        ], forName: UserDefaults.argumentDomain)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

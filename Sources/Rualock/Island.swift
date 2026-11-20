@@ -87,6 +87,8 @@ extension IslandStatus {
         switch state {
         case .watching:
             return StatusDisplay(green, "Watching", nil)
+        case .typing:
+            return StatusDisplay(green, "Typing", nil)
         case .absent:
             let left = max(0, lockDelay - absentFor)
             return StatusDisplay(amber, "Locking in \(Int(left.rounded(.up)))s", CGFloat(left / lockDelay))

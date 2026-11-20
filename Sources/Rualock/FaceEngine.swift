@@ -32,6 +32,10 @@ final class FaceEngine {
         var openness: Double?
         /// Unit-length SFace embedding, when requested.
         var embedding: [Float]?
+        /// Inner-lip height over width: near 0 closed, larger when talking.
+        var mouthOpen: Double? = nil
+        /// Mouth width over the distance between the eyes: grows when smiling.
+        var mouthWidth: Double? = nil
     }
 
     /// Faces found by the last full detection; frames in between only refit landmarks inside them.
@@ -66,6 +70,7 @@ final class FaceEngine {
         var out: [Face] = []
         for o in observations.prefix(limit) {
             var face = Face(box: o.boundingBox, openness: Self.openness(o, width: w, height: h), embedding: nil)
+            (face.mouthOpen, face.mouthWidth) = Self.mouth(o, width: w, height: h)
             if wantEmbeddings, let points = Self.fivePoints(o, width: w, height: h), let input = Self.align(buffer, points: points) {
                 face.embedding = embed(input)
             }
@@ -78,6 +83,21 @@ final class FaceEngine {
     func embeddings(in buffer: CVPixelBuffer, limit: Int = 3) -> (count: Int, embeddings: [[Float]]) {
         let (count, faces) = analyze(buffer, embed: true, limit: limit)
         return (count, faces.compactMap(\.embedding))
+    }
+
+    private static func mouth(_ face: VNFaceObservation, width: Int, height: Int) -> (Double?, Double?) {
+        guard let lm = face.landmarks, let inner = lm.innerLips, let outer = lm.outerLips,
+              let l = lm.leftEye, let r = lm.rightEye else { return (nil, nil) }
+        let size = CGSize(width: width, height: height)
+        func extent(_ region: VNFaceLandmarkRegion2D) -> (w: Double, h: Double, c: CGPoint)? {
+            let p = region.pointsInImage(imageSize: size)
+            guard let minX = p.map(\.x).min(), let maxX = p.map(\.x).max(),
+                  let minY = p.map(\.y).min(), let maxY = p.map(\.y).max() else { return nil }
+            return (Double(maxX - minX), Double(maxY - minY), CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2))
+        }
+        guard let i = extent(inner), let o = extent(outer), let a = extent(l), let b = extent(r) else { return (nil, nil) }
+        let eyeDistance = Double(hypot(a.c.x - b.c.x, a.c.y - b.c.y))
+        return (i.w > 1 ? i.h / i.w : nil, eyeDistance > 1 ? o.w / eyeDistance : nil)
     }
 
     private static func openness(_ face: VNFaceObservation, width: Int, height: Int) -> Double? {

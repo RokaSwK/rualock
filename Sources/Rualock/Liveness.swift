@@ -4,24 +4,41 @@ import QuartzCore
 /// Follows one face from frame to frame and tells whether it has proved it's live.
 ///
 /// A face that stays in view the whole time can't be swapped for a photo: slipping a phone in means
-/// the face disappears or jumps, which starts a new track. So a track proves itself once, by
-/// blinking (a photo never blinks), or by being the face in front of the camera right after you
-/// unlocked the Mac, and stays verified for as long as it's continuously in view.
+/// the face disappears or jumps, which starts a new track. So a track proves itself once and stays
+/// verified for as long as it's continuously in view. It proves itself by:
+/// - blinking (a photo never blinks),
+/// - talking: the mouth opening well past its recent normal for a few frames in a row (a photo,
+///   however it's tilted or how its landmarks jitter, doesn't), or
+/// - being the face in front of the camera right after you unlocked the Mac.
 struct FaceTrack {
     static let maxGap: CFTimeInterval = 1.0     // missing longer than this: a new track
     static let minOverlap: CGFloat = 0.3        // overlap with the last position needed to be the same face
     static let blinkMax: CFTimeInterval = 0.8   // closed longer than this isn't a blink (looking down)
     static let closed = 0.6                     // eyes below this fraction of their recent openness: closed
     static let reopened = 0.85                  // and back above this: open again
+    static let talkOpen = 0.3                   // mouth opening (height / width) this far above its normal...
+    static let talkFrames = 3                   // ...for this many frames in a row: talking (jitter is ~0.03-0.1)
+    static let missTolerance: CFTimeInterval = 1.5  // recognition misses ridden out on a face that stays put
+    static let stillOverlap: CGFloat = 0.6      // "stays put": overlap with where it last matched
+
+    /// Receives each decision (new track, verified, ...), for diagnostics. Nil in tests.
+    static var log: ((String, [String: Any]) -> Void)?
 
     private(set) var lastSeen: CFTimeInterval = 0
-    /// Blinked, or trusted because you had just unlocked.
+    /// Proved live, or trusted because you had just unlocked.
     private(set) var verified = false
     /// The latest recognition result for this face. See `setMatched`.
     private(set) var matched = false
+    /// Why the track is in its current state.
+    private(set) var why = "new face"
+
     private var box: CGRect?
-    private var history: [(t: CFTimeInterval, v: Double)] = []
+    private var eyes: [(t: CFTimeInterval, v: Double)] = []
+    private var mouth: [(t: CFTimeInterval, open: Double)] = []
+    private var mouthOpenRun = 0
     private var closedSince: CFTimeInterval?
+    private var misses = 0
+    private var lastMatch: (t: CFTimeInterval, box: CGRect)?
 
     /// Picks which of this frame's faces continues the track (nil if none is visible) and
     /// starts a new track when the face is a different one or came back after a gap.
@@ -40,45 +57,62 @@ struct FaceTrack {
             return best
         }
         guard let face = faces.first else {
-            if t - lastSeen > Self.maxGap { self = FaceTrack(); why = "face out of view" }
+            if box != nil, t - lastSeen > Self.maxGap {
+                Self.log?("track_lost", ["verified": verified, "matched": matched])
+                self = FaceTrack()
+                why = "face out of view"
+            }
             return nil
         }
-        let reason = box == nil ? "new face" : t - lastSeen > Self.maxGap
-            ? String(format: "back after %.1f s", t - lastSeen) : "face jumped"
+        let reason = box == nil ? "new face" : t - lastSeen > Self.maxGap ? "back after a gap" : "face jumped"
+        var info: [String: Any] = ["reason": reason, "wasVerified": verified]
+        if let box { info["gap"] = t - lastSeen; info["overlap"] = Double(iou(face.box, box)) }
+        Self.log?("track_new", info)
         self = FaceTrack()
         why = reason
-        if Prefs.debugLiveness { note("liveness: new track (\(reason))") }
         follow(face, at: t)
         return face
     }
 
     /// Mark this track as you without a blink (you've just unlocked with your password or Touch ID).
-    mutating func trust() { verified = true; why = "just unlocked" }
-
-    /// Record a recognition result. A change of identity clears verification: a blink from someone
-    /// else's face must not carry over to your photo held up in the same place. One miss in a row is
-    /// tolerated (a head turn can drop a single frame below the threshold); two make it someone else.
-    mutating func setMatched(_ m: Bool) {
-        if m {
-            if !matched { verified = false; why = "now matches you" }
-            matched = true
-            misses = 0
-        } else {
-            misses += 1
-            if misses >= 2 || !matched {
-                if matched { why = "two recognition misses" }
-                matched = false
-                verified = false
-            }
-        }
+    mutating func trust() {
+        verified = true
+        why = "just unlocked"
+        Self.log?("verified", ["by": "unlock"])
     }
 
-    private var misses = 0
-    /// Why the track is in its current state, for `-debugLiveness`.
-    private(set) var why = "new face"
+    /// Record a recognition result. A change of identity clears verification: a blink from someone
+    /// else's face must not carry over to your photo held up in the same place. A verified face that
+    /// stays put rides out up to 1.5 s of misses (looking down or turning drops the match score);
+    /// otherwise two misses in a row make it someone else.
+    mutating func setMatched(_ m: Bool) {
+        let t = lastSeen
+        if m {
+            if !matched {
+                verified = false
+                why = "now matches you"
+            }
+            matched = true
+            misses = 0
+            if let box { lastMatch = (t, box) }
+            return
+        }
+        misses += 1
+        guard matched else { return }
+        if verified, let last = lastMatch, let box, t - last.t <= Self.missTolerance, iou(box, last.box) >= Self.stillOverlap {
+            Self.log?("miss_tolerated", ["misses": misses, "since": t - last.t])
+            return
+        }
+        guard misses >= 2 else { return }
+        Self.log?("unmatched", ["misses": misses, "wasVerified": verified])
+        why = "stopped matching"
+        matched = false
+        verified = false
+    }
 
     /// Start a new track on `face` (for example, you, when the tracked face turned out to be someone else).
     mutating func restart(with face: FaceEngine.Face, at t: CFTimeInterval) {
+        Self.log?("track_new", ["reason": "switched to your face", "wasVerified": verified])
         self = FaceTrack()
         why = "switched to your face"
         follow(face, at: t)
@@ -87,27 +121,86 @@ struct FaceTrack {
     private mutating func follow(_ face: FaceEngine.Face, at t: CFTimeInterval, moveBox: Bool = true) {
         if moveBox { box = face.box }
         lastSeen = t
-        guard let v = face.openness else { return }
-        history.append((t, v))
-        history.removeAll { t - $0.t > 3 }
-        guard history.count >= 6 else { return }
-        let sorted = history.map(\.v).sorted()
+        if let v = face.openness { watchEyes(v, at: t) }
+        if let open = face.mouthOpen { watchMouth(open, at: t) }
+    }
+
+    private mutating func watchEyes(_ v: Double, at t: CFTimeInterval) {
+        eyes.append((t, v))
+        eyes.removeAll { t - $0.t > 3 }
+        guard eyes.count >= 6 else { return }
+        let sorted = eyes.map(\.v).sorted()
         let normal = sorted[Int(Double(sorted.count - 1) * 0.8)]
         if v < Self.closed * normal {
             if closedSince == nil { closedSince = t }
         } else if v > Self.reopened * normal, let since = closedSince {
-            if t - since <= Self.blinkMax && matched { verified = true; why = "blinked" }  // only your face's blinks count
-            if Prefs.debugLiveness && !verified {
-                note(String(format: "liveness: eyes closed %.2f s (%@)", t - since, matched ? "too slow" : "not matched"))
-            }
             closedSince = nil
+            let duration = t - since
+            let counts = duration <= Self.blinkMax && matched  // only your face's blinks count
+            Self.log?("eyes_closed", ["seconds": duration, "normal": normal, "counted": counts, "matched": matched, "verified": verified])
+            if counts && !verified { prove("blink") }
         }
+    }
+
+    private mutating func watchMouth(_ open: Double, at t: CFTimeInterval) {
+        mouth.append((t, open))
+        mouth.removeAll { t - $0.t > 3 }
+        guard mouth.count >= 8 else { return }
+        let sorted = mouth.map(\.open).sorted()
+        let normal = sorted[sorted.count / 2]
+        mouthOpenRun = open >= normal + Self.talkOpen ? mouthOpenRun + 1 : 0
+        if mouthOpenRun >= Self.talkFrames, matched, !verified {
+            prove("talking", ["open": open, "normal": normal])
+        }
+    }
+
+    private mutating func prove(_ how: String, _ info: [String: Any] = [:]) {
+        verified = true
+        why = how
+        var i = info
+        i["by"] = how
+        Self.log?("verified", i)
     }
 }
 
-private func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
     let i = a.intersection(b)
     guard !i.isNull else { return 0 }
     let inter = i.width * i.height
     return inter / (a.width * a.height + b.width * b.height - inter + 1e-9)
+}
+
+/// Keyboard and mouse input as presence: it keeps you "here" while the camera can't see your face
+/// (looking down at the keyboard), but only as an unbroken continuation of your confirmed face.
+/// Any pause in input longer than `gap` since your face was last confirmed ends it, so someone who
+/// sits down after you leave can't pick it up; and it lasts at most `limit` without your face.
+struct PresenceChain {
+    static let gap: TimeInterval = 3
+    static let limit: TimeInterval = 90
+
+    /// When you were last known to be here.
+    private(set) var presence: Date
+    private(set) var typing = false
+
+    init(at date: Date) { presence = date }
+
+    /// `faceAt` is when your confirmed face was last in view; `lastInput` the latest keyboard or mouse
+    /// event. Returns "start" or why it ended, when that changes.
+    mutating func update(now: Date, faceInView: Bool, faceAt: Date, lastInput: Date) -> String? {
+        if faceInView {
+            presence = max(presence, faceAt)
+            defer { typing = false }
+            return typing ? "face back" : nil
+        }
+        if lastInput > presence, lastInput.timeIntervalSince(presence) <= Self.gap, lastInput.timeIntervalSince(faceAt) <= Self.limit {
+            presence = lastInput
+            defer { typing = true }
+            return typing ? nil : "start"
+        }
+        if typing, now.timeIntervalSince(presence) > Self.gap {
+            typing = false
+            return lastInput.timeIntervalSince(faceAt) > Self.limit ? "limit" : "input paused"
+        }
+        return nil
+    }
 }

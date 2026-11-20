@@ -42,6 +42,11 @@ enum System {
         try? p.run()
     }
 
+    /// Seconds since the last keyboard, mouse or trackpad input in this login session. No permission needed.
+    static var inputIdle: TimeInterval {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+    }
+
     static var screenLocked: Bool {
         guard let d = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
         return (d["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue ?? false

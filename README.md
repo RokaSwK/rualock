@@ -18,7 +18,8 @@ Rualock watches your webcam for *your* face. When your face has been gone for a 
 ## Features
 
 - **Recognises you, not just any face.** Someone else sitting down doesn't keep your Mac unlocked.
-- **A photo isn't enough.** A face that appears after a gap has to blink before it counts as you, and a photo or a frozen screen never blinks. Once your face is confirmed (by a blink, or by being there right after you unlock), it stays confirmed for as long as it's continuously in view.
+- **A photo isn't enough.** A face that appears after a gap has to blink or talk before it counts as you, and a photo or a frozen screen does neither. Once your face is confirmed (by a blink, by talking, or by being there right after you unlock), it stays confirmed for as long as it's continuously in view.
+- **Typing counts.** Looking down at the keyboard can hide your face from the camera. Keyboard and mouse use that carries straight on from your confirmed face, with no pause over 3 seconds, keeps you present for up to 90 seconds. Someone sitting down after you leave can't pick it up, because standing up and sitting down takes longer than that.
 - **Lives in the notch.** A black shape extends the camera housing, so it looks like part of the hardware. Hover over it to read the status; it opens and closes on a spring.
 - **Or just the menu bar.** A normal menu bar icon shows the same dot and countdown ring, and its menu has pause, lock, Settings and Quit. In Settings you can turn off the light next to the camera, the menu bar icon, or neither; at least one stays on.
 - **Visible countdown.** When you leave, an amber ring drains around the dot, then the Mac locks.
@@ -52,7 +53,9 @@ Rualock watches your webcam for *your* face. When your face has been gone for a 
 3. Each face is aligned to a standard 112×112 pose, then **SFace** turns it into 128 numbers (an *embedding*). SFace is a small face-recognition network from the [OpenCV model zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface), converted to Core ML.
 4. Each embedding is compared with the 30 samples taken during setup. A cosine similarity of 0.363 or more counts as you.
 5. **Liveness.** Rualock follows the face from frame to frame. Right after you unlock, the face in front of the camera is trusted, because you've just typed your password or used Touch ID. A face that turns up after a gap (more than a second out of view, or a jump to another spot) has to blink first. For that, Rualock watches eye openness on every frame (10 per second): a blink is a sharp dip that recovers within 0.8 seconds. Slowly narrowed eyes, such as when you look down at the keyboard, don't count. While waiting, the light shows "Blink to confirm" and the countdown gets 10 extra seconds. Once confirmed, the face stays confirmed until it disappears again, so slipping a phone in after you get up doesn't work.
-6. If you haven't been seen for the lock delay, Rualock locks the screen.
+6. **Short misses.** A confirmed face that stays in place rides out up to 1.5 seconds of failed matches, which happen when you turn or tilt your head. Swapping a face in front of the camera moves it, so this doesn't help a photo.
+7. **Typing.** If the camera loses your face but your keyboard and mouse use carries straight on (see Features), the countdown waits. The light shows "Typing".
+8. If you haven't been seen for the lock delay, Rualock locks the screen.
 
 On first launch, Rualock asks for camera access and takes about 5 seconds to learn your face. It also adds itself to your login items; you can turn that off in Settings.
 
@@ -97,9 +100,19 @@ scripts/build.sh && scripts/notarize.sh     # → build/Rualock-1.0.0.dmg, notar
 | `Rualock.app/Contents/MacOS/Rualock -dryRun YES` | Run without locking; logs "would lock" instead. |
 | `Rualock.app/Contents/MacOS/Rualock --embed photo.png` | Print the embedding of the largest face in an image. |
 | `Rualock.app/Contents/MacOS/Rualock --screenshots dir` | Render the images in this README. |
-| `defaults write com.rualock.mac debugLiveness -bool true` | Log liveness decisions (new face, blink, identity change) to the log file. |
+| `Rualock.app/Contents/MacOS/Rualock --report [days]` | Summarise the diagnostics: locks by reason and how many were probably false, what happened in the 10 s before each, match scores, eye closures, typing. |
 
 Logs go to `~/Library/Logs/Rualock.log` and to the unified log, under subsystem `com.rualock.mac`.
+
+## Diagnostics
+
+To tune the rules on real use, Rualock records numbers locally, in `~/Library/Application Support/Rualock/Diagnostics`, kept for 14 days. You can turn this off in Settings, and Settings has a "Show in Finder" button for the folder.
+
+- **Samples:** one line per recognition frame, 4 a second while watching: faces seen, match score, eye openness, mouth opening, seconds since your last keyboard or mouse input, state and countdown.
+- **Events:** every decision: a new face track and why, how a face was confirmed, tolerated misses, eye closures and their length, typing starting and ending, locks, unlocks, pauses.
+- **Locks:** each lock with the 30 seconds before it and how soon you unlocked. Unlocking within 15 seconds marks it as a probable false lock.
+
+There are no images and no face embeddings in these files.
 
 ## Privacy
 

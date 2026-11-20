@@ -5,6 +5,7 @@ final class SettingsWindowController: NSWindowController {
     private let login = NSButton(checkboxWithTitle: "Start Rualock when you log in", target: nil, action: nil)
     private let island = NSButton(checkboxWithTitle: "Status light next to the camera", target: nil, action: nil)
     private let menuBar = NSButton(checkboxWithTitle: "Icon in the menu bar", target: nil, action: nil)
+    private let diagnostics = NSButton(checkboxWithTitle: "Record diagnostics for tuning (numbers only, stays on this Mac)", target: nil, action: nil)
     private let blink = NSButton(checkboxWithTitle: "Require a blink, so a photo can't stand in for you", target: nil, action: nil)
     private let onReenroll: () -> Void
     private let onDisplayChange: () -> Void
@@ -13,7 +14,7 @@ final class SettingsWindowController: NSWindowController {
         self.onReenroll = onReenroll
         self.onDisplayChange = onDisplayChange
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 290),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 340),
             styleMask: [.titled, .closable], backing: .buffered, defer: false
         )
         window.title = "Rualock Settings"
@@ -32,6 +33,9 @@ final class SettingsWindowController: NSWindowController {
         login.action = #selector(loginChanged)
         blink.target = self
         blink.action = #selector(blinkChanged)
+        diagnostics.target = self
+        diagnostics.action = #selector(diagnosticsChanged)
+        let showDiagnostics = NSButton(title: "Show in Finder", target: self, action: #selector(showDiagnosticsFolder))
         for b in [island, menuBar] {
             b.target = self
             b.action = #selector(displayChanged)
@@ -45,6 +49,8 @@ final class SettingsWindowController: NSWindowController {
             [NSGridCell.emptyContentView, menuBar],
             [label("General:"), login],
             [label("Face:"), reenroll],
+            [label("Diagnostics:"), diagnostics],
+            [NSGridCell.emptyContentView, showDiagnostics],
         ])
         grid.rowSpacing = 14
         grid.columnSpacing = 10
@@ -87,11 +93,22 @@ final class SettingsWindowController: NSWindowController {
     /// Match the checkboxes to the preferences. One of the two must stay on, or you'd have no way back
     /// to the menu short of opening the app again.
     func refresh() {
+        diagnostics.state = Prefs.recordDiagnostics ? .on : .off
         blink.state = Prefs.requireBlink ? .on : .off
         island.state = Prefs.showIsland ? .on : .off
         menuBar.state = Prefs.showMenuBarIcon ? .on : .off
         island.isEnabled = Prefs.showMenuBarIcon
         menuBar.isEnabled = Prefs.showIsland
+    }
+
+    @objc private func diagnosticsChanged() {
+        Prefs.recordDiagnostics = diagnostics.state == .on
+        note("diagnostics \(Prefs.recordDiagnostics ? "on" : "off")")
+    }
+
+    @objc private func showDiagnosticsFolder() {
+        try? FileManager.default.createDirectory(at: Diagnostics.shared.dir, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([Diagnostics.shared.dir])
     }
 
     /// Turning the blink check off weakens protection, so it needs Touch ID like pausing does.
