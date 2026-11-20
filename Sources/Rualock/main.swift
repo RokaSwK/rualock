@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
 
     func resume() {
         Pause.clear()
+        watcher.resumedByYou()
         note("resumed")
         Diagnostics.shared.event("pause_ended", ["by": "resume"])
     }

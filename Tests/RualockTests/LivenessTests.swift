@@ -83,9 +83,8 @@ final class LifeSignTests: XCTestCase {
     private let box = CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.3)
     private var t = 0.0
 
-    private func step(_ track: inout FaceTrack, mouthOpen: Double = 0.05, mouthWidth: Double = 1.0,
-                      box: CGRect? = nil, matched: Bool? = true) {
-        let f = FaceEngine.Face(box: box ?? self.box, openness: 0.3, embedding: nil, mouthOpen: mouthOpen, mouthWidth: mouthWidth)
+    private func step(_ track: inout FaceTrack, mouthOpen: Double? = 0.05, box: CGRect? = nil, matched: Bool? = true) {
+        let f = FaceEngine.Face(box: box ?? self.box, openness: 0.3, embedding: nil, mouthOpen: mouthOpen)
         _ = track.update([f], at: t)
         if let matched { track.setMatched(matched) }
         t += 0.1
@@ -97,6 +96,25 @@ final class LifeSignTests: XCTestCase {
         for _ in 0 ..< 4 { step(&track, mouthOpen: 0.7) }  // a word: the mouth opens wide for 0.4 s
         XCTAssertTrue(track.verified)
         XCTAssertEqual(track.why, "talking")
+    }
+
+    func testAMissingMouthReadingResetsTheCount() {
+        var track = FaceTrack()
+        for _ in 0 ..< 10 { step(&track, mouthOpen: 0.15) }
+        step(&track, mouthOpen: 0.7)
+        step(&track, mouthOpen: 0.7)
+        step(&track, mouthOpen: nil)  // landmarks missing for a frame
+        step(&track, mouthOpen: 0.7)
+        XCTAssertFalse(track.verified)
+    }
+
+    func testMouthBeforeAMatchDoesNotCount() {
+        var track = FaceTrack()
+        for _ in 0 ..< 10 { step(&track, mouthOpen: 0.15, matched: false) }
+        step(&track, mouthOpen: 0.7, matched: false)
+        step(&track, mouthOpen: 0.7, matched: false)
+        step(&track, mouthOpen: 0.7, matched: true)  // the first frame that matches you
+        XCTAssertFalse(track.verified)
     }
 
     func testLandmarkJitterIsNotTalking() {
@@ -168,6 +186,16 @@ final class PresenceChainTests: XCTestCase {
         XCTAssertEqual(chain.presence, t0)
     }
 
+    func testNoCarryingOnWithoutAConfirmedFace() {
+        // After a pause or camera restart your face hasn't been confirmed yet: typing alone does nothing.
+        var chain = PresenceChain(at: t0)
+        for s in stride(from: 1.0, through: 30, by: 1) {
+            _ = chain.update(now: at(s), faceInView: false, faceAt: .distantPast, lastInput: at(s))
+        }
+        XCTAssertFalse(chain.typing)
+        XCTAssertEqual(chain.presence, t0)
+    }
+
     func testCappedWithoutYourFace() {
         var chain = PresenceChain(at: t0)
         for s in stride(from: 1.0, through: 120, by: 1) {
@@ -175,5 +203,62 @@ final class PresenceChainTests: XCTestCase {
         }
         XCTAssertEqual(chain.presence, at(90))
         XCTAssertFalse(chain.typing)
+    }
+}
+
+/// Moving a photo must not look like a blink or a word.
+final class FaceGeometryTests: XCTestCase {
+    private func ellipse(_ cx: CGFloat, _ cy: CGFloat, _ w: CGFloat, _ h: CGFloat) -> [CGPoint] {
+        (0 ..< 8).map { i in
+            let a = CGFloat(i) / 8 * 2 * .pi
+            return CGPoint(x: cx + w / 2 * cos(a), y: cy + h / 2 * sin(a))
+        }
+    }
+
+    /// A face in its own frame (eyes on y = 0, mouth below), tipped back by squashing it vertically
+    /// by `pitch`, then rotated by `roll` and moved into the image.
+    private func face(eyeHeight: CGFloat = 10, lipGap: CGFloat = 3, pitch: CGFloat = 1, roll: CGFloat = 0)
+        -> (left: [CGPoint], right: [CGPoint], outer: [CGPoint], inner: [CGPoint]) {
+        func place(_ p: [CGPoint]) -> [CGPoint] {
+            p.map { q in
+                let x = q.x, y = q.y * pitch
+                return CGPoint(x: 400 + x * cos(roll) - y * sin(roll), y: 300 + x * sin(roll) + y * cos(roll))
+            }
+        }
+        return (place(ellipse(-30, 0, 30, eyeHeight)), place(ellipse(30, 0, 30, eyeHeight)),
+                place(ellipse(0, -60, 50, 16)), place(ellipse(0, -60, 40, lipGap)))
+    }
+
+    private func eyes(_ f: (left: [CGPoint], right: [CGPoint], outer: [CGPoint], inner: [CGPoint])) -> Double {
+        FaceGeometry.eyeOpenness(leftEye: f.left, rightEye: f.right, mouth: f.outer)!
+    }
+
+    private func mouth(_ f: (left: [CGPoint], right: [CGPoint], outer: [CGPoint], inner: [CGPoint])) -> Double {
+        FaceGeometry.mouthOpening(innerLips: f.inner, leftEye: f.left, rightEye: f.right)!
+    }
+
+    func testTiltingSidewaysChangesNothing() {
+        let level = face()
+        for degrees in [15.0, 30.0, 45.0, -40.0] {
+            let tilted = face(roll: CGFloat(degrees * .pi / 180))
+            XCTAssertEqual(eyes(tilted), eyes(level), accuracy: 0.02, "eyes at \(degrees)°")
+            XCTAssertEqual(mouth(tilted), mouth(level), accuracy: 0.02, "mouth at \(degrees)°")
+        }
+    }
+
+    func testTippingBackDoesNotLookLikeABlink() {
+        let upright = eyes(face())
+        for pitch in [0.8, 0.6, 0.4] {
+            XCTAssertEqual(eyes(face(pitch: CGFloat(pitch))), upright, accuracy: 0.02)
+        }
+    }
+
+    func testTippingBackDoesNotLookLikeTalking() {
+        XCTAssertLessThanOrEqual(mouth(face(pitch: 0.5)), mouth(face()) + 0.01)
+    }
+
+    func testClosingTheEyesAndOpeningTheMouthDo() {
+        XCTAssertLessThan(eyes(face(eyeHeight: 2)), 0.4 * eyes(face()))
+        XCTAssertGreaterThan(mouth(face(lipGap: 20)), mouth(face()) + FaceTrack.talkOpen)
     }
 }

@@ -28,14 +28,12 @@ final class FaceEngine {
     struct Face {
         /// Normalised Vision coordinates (0-1, bottom-left origin).
         var box: CGRect
-        /// Eye height over width, averaged over both eyes; drops sharply during a blink.
+        /// Eye height over the eyes-to-mouth distance (see `FaceGeometry`); drops sharply in a blink.
         var openness: Double?
         /// Unit-length SFace embedding, when requested.
         var embedding: [Float]?
         /// Inner-lip height over width: near 0 closed, larger when talking.
         var mouthOpen: Double? = nil
-        /// Mouth width over the distance between the eyes: grows when smiling.
-        var mouthWidth: Double? = nil
     }
 
     /// Faces found by the last full detection; frames in between only refit landmarks inside them.
@@ -69,8 +67,8 @@ final class FaceEngine {
         defer { if wantEmbeddings { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) } }
         var out: [Face] = []
         for o in observations.prefix(limit) {
-            var face = Face(box: o.boundingBox, openness: Self.openness(o, width: w, height: h), embedding: nil)
-            (face.mouthOpen, face.mouthWidth) = Self.mouth(o, width: w, height: h)
+            let (eyes, mouth) = Self.eyesAndMouth(o, width: w, height: h)
+            var face = Face(box: o.boundingBox, openness: eyes, embedding: nil, mouthOpen: mouth)
             if wantEmbeddings, let points = Self.fivePoints(o, width: w, height: h), let input = Self.align(buffer, points: points) {
                 face.embedding = embed(input)
             }
@@ -85,32 +83,15 @@ final class FaceEngine {
         return (count, faces.compactMap(\.embedding))
     }
 
-    private static func mouth(_ face: VNFaceObservation, width: Int, height: Int) -> (Double?, Double?) {
-        guard let lm = face.landmarks, let inner = lm.innerLips, let outer = lm.outerLips,
-              let l = lm.leftEye, let r = lm.rightEye else { return (nil, nil) }
+    /// Eye openness and mouth opening, measured in the face's own frame (see `FaceGeometry`).
+    private static func eyesAndMouth(_ face: VNFaceObservation, width: Int, height: Int) -> (eyes: Double?, mouth: Double?) {
+        guard let lm = face.landmarks, let l = lm.leftEye, let r = lm.rightEye else { return (nil, nil) }
         let size = CGSize(width: width, height: height)
-        func extent(_ region: VNFaceLandmarkRegion2D) -> (w: Double, h: Double, c: CGPoint)? {
-            let p = region.pointsInImage(imageSize: size)
-            guard let minX = p.map(\.x).min(), let maxX = p.map(\.x).max(),
-                  let minY = p.map(\.y).min(), let maxY = p.map(\.y).max() else { return nil }
-            return (Double(maxX - minX), Double(maxY - minY), CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2))
-        }
-        guard let i = extent(inner), let o = extent(outer), let a = extent(l), let b = extent(r) else { return (nil, nil) }
-        let eyeDistance = Double(hypot(a.c.x - b.c.x, a.c.y - b.c.y))
-        return (i.w > 1 ? i.h / i.w : nil, eyeDistance > 1 ? o.w / eyeDistance : nil)
-    }
-
-    private static func openness(_ face: VNFaceObservation, width: Int, height: Int) -> Double? {
-        guard let lm = face.landmarks, let l = lm.leftEye, let r = lm.rightEye else { return nil }
-        let size = CGSize(width: width, height: height)
-        func ratio(_ region: VNFaceLandmarkRegion2D) -> Double? {
-            let p = region.pointsInImage(imageSize: size)
-            guard let minX = p.map(\.x).min(), let maxX = p.map(\.x).max(),
-                  let minY = p.map(\.y).min(), let maxY = p.map(\.y).max(), maxX - minX > 1 else { return nil }
-            return Double((maxY - minY) / (maxX - minX))
-        }
-        guard let a = ratio(l), let b = ratio(r) else { return nil }
-        return (a + b) / 2
+        let left = l.pointsInImage(imageSize: size), right = r.pointsInImage(imageSize: size)
+        let inner = lm.innerLips?.pointsInImage(imageSize: size) ?? []
+        let outer = lm.outerLips?.pointsInImage(imageSize: size) ?? []
+        return (FaceGeometry.eyeOpenness(leftEye: left, rightEye: right, mouth: outer.isEmpty ? inner : outer),
+                FaceGeometry.mouthOpening(innerLips: inner, leftEye: left, rightEye: right))
     }
 
     /// Eye centres (image-left first), nose tip, mouth corners, in top-left pixel coordinates.

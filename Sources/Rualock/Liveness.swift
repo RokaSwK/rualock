@@ -47,7 +47,10 @@ struct FaceTrack {
     mutating func update(_ faces: [FaceEngine.Face], at t: CFTimeInterval, detected: Bool = true) -> FaceEngine.Face? {
         if !detected {
             guard let box, t - lastSeen <= Self.maxGap,
-                  let best = faces.max(by: { iou($0.box, box) < iou($1.box, box) }), iou(best.box, box) > 0 else { return nil }
+                  let best = faces.max(by: { iou($0.box, box) < iou($1.box, box) }), iou(best.box, box) > 0 else {
+                mouthOpenRun = 0
+                return nil
+            }
             follow(best, at: t, moveBox: false)
             return best
         }
@@ -57,6 +60,7 @@ struct FaceTrack {
             return best
         }
         guard let face = faces.first else {
+            mouthOpenRun = 0
             if box != nil, t - lastSeen > Self.maxGap {
                 Self.log?("track_lost", ["verified": verified, "matched": matched])
                 self = FaceTrack()
@@ -84,8 +88,8 @@ struct FaceTrack {
     /// Record a recognition result. A change of identity clears verification: a blink from someone
     /// else's face must not carry over to your photo held up in the same place. A verified face that
     /// stays put rides out up to 1.5 s of misses (looking down or turning drops the match score);
-    /// otherwise two misses in a row make it someone else.
-    mutating func setMatched(_ m: Bool) {
+    /// otherwise two misses in a row make it someone else. `score` is only logged.
+    mutating func setMatched(_ m: Bool, score: Float? = nil) {
         let t = lastSeen
         if m {
             if !matched {
@@ -100,7 +104,7 @@ struct FaceTrack {
         misses += 1
         guard matched else { return }
         if verified, let last = lastMatch, let box, t - last.t <= Self.missTolerance, iou(box, last.box) >= Self.stillOverlap {
-            Self.log?("miss_tolerated", ["misses": misses, "since": t - last.t])
+            Self.log?("miss_tolerated", ["misses": misses, "since": t - last.t, "score": Double(score ?? -1)])
             return
         }
         guard misses >= 2 else { return }
@@ -122,7 +126,7 @@ struct FaceTrack {
         if moveBox { box = face.box }
         lastSeen = t
         if let v = face.openness { watchEyes(v, at: t) }
-        if let open = face.mouthOpen { watchMouth(open, at: t) }
+        if let open = face.mouthOpen { watchMouth(open, at: t) } else { mouthOpenRun = 0 }
     }
 
     private mutating func watchEyes(_ v: Double, at t: CFTimeInterval) {
@@ -148,8 +152,9 @@ struct FaceTrack {
         guard mouth.count >= 8 else { return }
         let sorted = mouth.map(\.open).sorted()
         let normal = sorted[sorted.count / 2]
-        mouthOpenRun = open >= normal + Self.talkOpen ? mouthOpenRun + 1 : 0
-        if mouthOpenRun >= Self.talkFrames, matched, !verified {
+        // Count only consecutive wide-open frames of a matching face that still has to prove itself.
+        mouthOpenRun = matched && !verified && open >= normal + Self.talkOpen ? mouthOpenRun + 1 : 0
+        if mouthOpenRun >= Self.talkFrames {
             prove("talking", ["open": open, "normal": normal])
         }
     }

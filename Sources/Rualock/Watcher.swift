@@ -32,8 +32,11 @@ final class Watcher {
     private var embeddings: [[Float]] = Enrollment.load()
     private var enrollSink: ((Int, [[Float]]) -> Void)?
 
-    /// When your confirmed face was last in view.
+    /// The start of the current countdown: your confirmed face, or a fresh start (unlock, pause, wake).
     private var lastSeen = Date()
+    /// When your confirmed face was last in view since the last fresh start; nil until then. Typing
+    /// only carries on from this, never from a fresh start.
+    private var lastConfirmed: Date?
     /// Your confirmed face, or keyboard and mouse input carrying straight on from it.
     private var chain = PresenceChain(at: Date())
     private var presence: Date { chain.presence }
@@ -82,6 +85,11 @@ final class Watcher {
             "requireBlink": Prefs.requireBlink, "dryRun": Prefs.dryRun, "samples": embeddings.count,
         ])
         tick()
+    }
+
+    /// You clicked Resume: you're here, like after an unlock.
+    func resumedByYou() {
+        trustUntil = Date().addingTimeInterval(Self.unlockTrust)
     }
 
     // MARK: enrolment
@@ -173,6 +181,9 @@ final class Watcher {
             }
             lastFrame = now
             resetClock()
+            // Right after an unlock or a click on Resume it's you, even before the camera finds your
+            // face: typing counts straight away (you often start typing, looking down, as you unlock).
+            if let until = trustUntil, now < until { lastConfirmed = now }
             seen = nil
             track = FaceTrack()
         }
@@ -224,7 +235,8 @@ final class Watcher {
     /// Let keyboard and mouse input carry on from your confirmed face (see `PresenceChain`).
     private func followInput(_ now: Date) {
         let idle = System.inputIdle
-        let change = chain.update(now: now, faceInView: seen == .you, faceAt: lastSeen, lastInput: now.addingTimeInterval(-idle))
+        let change = chain.update(now: now, faceInView: seen == .you, faceAt: lastConfirmed ?? .distantPast,
+                                  lastInput: now.addingTimeInterval(-idle))
         switch change {
         case "start"?: Diagnostics.shared.event("typing_start", ["sinceFace": now.timeIntervalSince(lastSeen)])
         case let why?: Diagnostics.shared.event("typing_end", ["why": why, "idle": idle, "sinceFace": now.timeIntervalSince(lastSeen)])
@@ -235,6 +247,7 @@ final class Watcher {
     /// Start the countdown afresh: after an unlock, a pause, waking, or a camera restart.
     private func resetClock() {
         lastSeen = Date()
+        lastConfirmed = nil
         chain = PresenceChain(at: lastSeen)
     }
 
@@ -294,7 +307,7 @@ final class Watcher {
                 track.setMatched(true)
                 score = best(you)
             } else {
-                track.setMatched((score ?? 0) >= threshold)
+                track.setMatched((score ?? 0) >= threshold, score: score)
             }
         }
         defer { record(count: count, face: face, score: score, recognised: recognised) }
@@ -319,6 +332,7 @@ final class Watcher {
         if !Prefs.requireBlink || track.verified {
             seen = .you
             lastSeen = now
+            lastConfirmed = now
             setBlinkMode(false)
         } else {
             seen = .unverified
@@ -338,7 +352,6 @@ final class Watcher {
             r["size"] = Double(face.box.width)
             if let o = face.openness { r["eyes"] = o }
             if let m = face.mouthOpen { r["mouthOpen"] = m }
-            if let m = face.mouthWidth { r["mouthWidth"] = m }
         }
         Diagnostics.shared.sample(r)
     }

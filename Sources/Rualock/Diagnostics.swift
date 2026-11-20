@@ -71,12 +71,13 @@ final class Diagnostics {
 
     /// The screen was unlocked. Completes the pending lock record, if Rualock caused the lock.
     func unlocked() {
+        let pending = pendingLock
+        pendingLock = nil  // consumed even when recording is off, so it can't attach to a later unlock
         guard enabled else { return }
-        guard let pending = pendingLock else {
+        guard let pending else {
             event("unlock", ["byRualock": false])
             return
         }
-        pendingLock = nil
         let after = Date().timeIntervalSince(pending.at)
         let suspected = after <= Self.falseLockWindow
         event("unlock", ["byRualock": true, "after": after, "suspectedFalse": suspected])
@@ -105,6 +106,7 @@ final class Diagnostics {
                     try? h.close()
                     self.handles[n] = nil
                 }
+                Self.prune(dir)  // also on day rollover, for a watcher that runs for weeks
                 let url = dir.appendingPathComponent(name)
                 if !FileManager.default.fileExists(atPath: url.path) {
                     FileManager.default.createFile(atPath: url.path, contents: nil, attributes: [.posixPermissions: 0o600])
@@ -112,7 +114,12 @@ final class Diagnostics {
                 self.handles[name] = try? FileHandle(forWritingTo: url)
                 _ = try? self.handles[name]?.seekToEnd()
             }
-            self.handles[name]?.write(data + Data("\n".utf8))
+            do {
+                try self.handles[name]?.write(contentsOf: data + Data("\n".utf8))
+            } catch {  // a full disk must never take the watcher down: drop this file and retry next time
+                try? self.handles[name]?.close()
+                self.handles[name] = nil
+            }
         }
     }
 
