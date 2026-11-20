@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 
 /// Rualock Settings, laid out like System Settings: a grouped form in sections.
@@ -53,6 +54,7 @@ final class SettingsModel: ObservableObject {
     @Published var join = Prefs.islandJoin
     @Published var advanced = false
     @Published var canBlockAll = InputBlocker.allowed
+    @Published var cameraAllowed = SettingsModel.cameraAuthorized
 
     let onReenroll: () -> Void
     let onDisplayChange: () -> Void
@@ -79,6 +81,15 @@ final class SettingsModel: ObservableObject {
         ear = Prefs.islandEar
         join = Prefs.islandJoin
         canBlockAll = InputBlocker.allowed
+        cameraAllowed = Self.cameraAuthorized
+    }
+
+    static var cameraAuthorized: Bool { AVCaptureDevice.authorizationStatus(for: .video) == .authorized }
+
+    /// Permissions are granted in System Settings: pick up changes while this window is open.
+    func pollPermissions() {
+        if canBlockAll != InputBlocker.allowed { canBlockAll = InputBlocker.allowed }
+        if cameraAllowed != Self.cameraAuthorized { cameraAllowed = Self.cameraAuthorized }
     }
 
     /// The light can't be shorter than its ring, so a bigger dot raises the minimum height.
@@ -105,6 +116,8 @@ final class SettingsModel: ObservableObject {
             Prefs.freezeInstead = true
             self?.freeze = true
             note("when you leave: freeze (prank)")
+            // Freezing blocks everything only with Accessibility access: ask for it straight away.
+            if !InputBlocker.allowed { InputBlocker.requestAccess(openPane: false) }
         }
     }
 
@@ -208,7 +221,7 @@ struct SettingsView: View {
                         if model.canBlockAll {
                             Label("On", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                         } else {
-                            Button("Allow Accessibility…", action: InputBlocker.requestAccess)
+                            Button("Allow Accessibility…") { InputBlocker.requestAccess() }
                         }
                     } label: {
                         Text("Block all input")
@@ -265,6 +278,23 @@ struct SettingsView: View {
             }
 
             Section {
+                LabeledContent {
+                    permission(model.cameraAllowed, "Allow…", action: System.openCameraPrivacySettings)
+                } label: {
+                    Text("Camera")
+                    Text("To see your face. Rualock doesn't work without it.")
+                }
+                LabeledContent {
+                    permission(model.canBlockAll, "Allow…") { InputBlocker.requestAccess() }
+                } label: {
+                    Text("Accessibility")
+                    Text("Lets freeze mode block all input: keys, clicks, the cursor, gestures and shortcuts.")
+                }
+            } header: {
+                Text("Permissions")
+            }
+
+            Section {
                 Toggle("Start Rualock when you log in", isOn: bind({ model.startsAtLogin }, model.setStartsAtLogin))
                 LabeledContent("Your face") {
                     Button("Re-enrol…", action: model.reenroll)
@@ -292,8 +322,17 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(minWidth: 520, minHeight: 420)
         // Accessibility is granted in System Settings: notice when it changes.
-        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
-            if model.canBlockAll != InputBlocker.allowed { model.canBlockAll = InputBlocker.allowed }
+        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in model.pollPermissions() }
+    }
+
+    /// "Allowed" with a tick, or a button that asks for the permission.
+    @ViewBuilder
+    private func permission(_ granted: Bool, _ title: String, action: @escaping () -> Void) -> some View {
+        if granted {
+            Label("Allowed", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        } else {
+            Button(title, action: action)
         }
     }
 
