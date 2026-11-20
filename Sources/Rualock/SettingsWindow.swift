@@ -3,12 +3,17 @@ import AppKit
 final class SettingsWindowController: NSWindowController {
     private let delay = NSPopUpButton()
     private let login = NSButton(checkboxWithTitle: "Start Rualock when you log in", target: nil, action: nil)
+    private let island = NSButton(checkboxWithTitle: "Status light next to the camera", target: nil, action: nil)
+    private let menuBar = NSButton(checkboxWithTitle: "Icon in the menu bar", target: nil, action: nil)
+    private let blink = NSButton(checkboxWithTitle: "Require a blink, so a photo can't stand in for you", target: nil, action: nil)
     private let onReenroll: () -> Void
+    private let onDisplayChange: () -> Void
 
-    init(onReenroll: @escaping () -> Void) {
+    init(onReenroll: @escaping () -> Void, onDisplayChange: @escaping () -> Void) {
         self.onReenroll = onReenroll
+        self.onDisplayChange = onDisplayChange
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 190),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 290),
             styleMask: [.titled, .closable], backing: .buffered, defer: false
         )
         window.title = "Rualock Settings"
@@ -25,11 +30,20 @@ final class SettingsWindowController: NSWindowController {
         delay.action = #selector(delayChanged)
         login.target = self
         login.action = #selector(loginChanged)
+        blink.target = self
+        blink.action = #selector(blinkChanged)
+        for b in [island, menuBar] {
+            b.target = self
+            b.action = #selector(displayChanged)
+        }
         let reenroll = NSButton(title: "Re-enrol Face…", target: self, action: #selector(reenrollClicked))
 
         let grid = NSGridView(views: [
             [label("Lock after you leave:"), delay],
-            [NSGridCell.emptyContentView, login],
+            [label("Security:"), blink],
+            [label("Show:"), island],
+            [NSGridCell.emptyContentView, menuBar],
+            [label("General:"), login],
             [label("Face:"), reenroll],
         ])
         grid.rowSpacing = 14
@@ -58,6 +72,7 @@ final class SettingsWindowController: NSWindowController {
     func present() {
         delay.selectItem(at: Prefs.lockDelays.firstIndex(of: Prefs.lockDelay) ?? 1)
         login.state = System.startsAtLogin ? .on : .off
+        refresh()
         NSApp.activate(ignoringOtherApps: true)
         window?.center()
         showWindow(nil)
@@ -67,6 +82,39 @@ final class SettingsWindowController: NSWindowController {
     @objc private func delayChanged() {
         Prefs.lockDelay = Prefs.lockDelays[delay.indexOfSelectedItem]
         note("lock delay set to \(Int(Prefs.lockDelay))s")
+    }
+
+    /// Match the checkboxes to the preferences. One of the two must stay on, or you'd have no way back
+    /// to the menu short of opening the app again.
+    func refresh() {
+        blink.state = Prefs.requireBlink ? .on : .off
+        island.state = Prefs.showIsland ? .on : .off
+        menuBar.state = Prefs.showMenuBarIcon ? .on : .off
+        island.isEnabled = Prefs.showMenuBarIcon
+        menuBar.isEnabled = Prefs.showIsland
+    }
+
+    /// Turning the blink check off weakens protection, so it needs Touch ID like pausing does.
+    @objc private func blinkChanged() {
+        if blink.state == .on {
+            Prefs.requireBlink = true
+            note("blink check on")
+            return
+        }
+        blink.state = .on
+        System.authenticate("turn off the blink check in Rualock") { [weak self] ok in
+            guard ok else { return }
+            Prefs.requireBlink = false
+            note("blink check off")
+            self?.refresh()
+        }
+    }
+
+    @objc private func displayChanged() {
+        Prefs.showIsland = island.state == .on
+        Prefs.showMenuBarIcon = menuBar.state == .on
+        note("show: status light \(Prefs.showIsland ? "on" : "off"), menu bar icon \(Prefs.showMenuBarIcon ? "on" : "off")")
+        onDisplayChange()
     }
 
     @objc private func loginChanged() {

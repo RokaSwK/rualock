@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// `Rualock --screenshots dir`: renders the README images. The island is drawn into a mock menu bar
 /// from scripted states (no camera involved); the windows are opened briefly and captured.
-final class Screenshots: NSObject, NSApplicationDelegate {
+final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
     private final class Scripted: IslandStatus {
         var state: Watcher.State = .watching
         var absentFor: TimeInterval = 0
@@ -46,6 +46,8 @@ final class Screenshots: NSObject, NSApplicationDelegate {
         still("watching", hover: false) { status.state = .watching }
         still("watching-hover", hover: true) { status.state = .watching }
         still("locking-hover", hover: true) { status.state = .absent; status.absentFor = 5.2 }
+        still("blink-hover", hover: true) { status.state = .unverified; status.lockDelay = 18; status.absentFor = 5 }
+        status.lockDelay = 8
         still("paused-hover", hover: true) {
             status.state = .paused
             status.pauseWindow = (Date().addingTimeInterval(-180), Date().addingTimeInterval(12 * 60 - 1))
@@ -172,7 +174,7 @@ final class Screenshots: NSObject, NSApplicationDelegate {
     private func windows() {
         guard let engine = try? FaceEngine() else { finish(); return }
         let setup = EnrollWindowController(watcher: Watcher(engine: engine))
-        let settings = SettingsWindowController {}
+        let settings = SettingsWindowController(onReenroll: {}, onDisplayChange: {})
         keep = [setup, settings]
         setup.showForScreenshot(done: false)
         setup.present()
@@ -186,11 +188,95 @@ final class Screenshots: NSObject, NSApplicationDelegate {
                 self.after(0.8) {
                     self.capture(settings.window, "settings")
                     settings.close()
-                    self.finish()
+                    self.menuBarShot()
                 }
             }
         }
     }
+
+    // The menu bar icon with its menu open. Run with the real app quit, so only one icon shows.
+    private var menuBar: MenuBarController?
+
+    private func menuBarShot() {
+        status.state = .watching
+        let bar = MenuBarController(status: status, actions: self)
+        menuBar = bar
+        bar.setVisible(true)
+        after(0.8) {
+            guard let button = bar.button, let window = button.window, let screen = window.screen ?? NSScreen.main,
+                  let primary = NSScreen.screens.first else { return self.finish() }
+            let f = window.frame
+            let barHeight = screen.frame.maxY - screen.visibleFrame.maxY
+            let rect = CGRect(x: f.minX - 14, y: primary.frame.maxY - screen.frame.maxY, width: 236, height: 226)
+            // A plain backdrop under the (translucent) menu, so other windows don't show through.
+            let backdrop = NSWindow(
+                contentRect: NSRect(x: rect.minX - 20, y: screen.frame.maxY - rect.height - 20, width: rect.width + 40, height: rect.height + 20 - barHeight),
+                styleMask: .borderless, backing: .buffered, defer: false
+            )
+            backdrop.backgroundColor = NSColor(srgbRed: 0.13, green: 0.13, blue: 0.15, alpha: 1)
+            backdrop.level = .floating
+            backdrop.orderFrontRegardless()
+            let path = self.dir.appendingPathComponent("menu.png")
+            let iconRight = f.maxX - rect.minX + 4
+            let done = DispatchGroup()
+            done.enter()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                p.arguments = ["-x", "-R\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))", path.path]
+                try? p.run()
+                p.waitUntilExit()
+                self.maskNeighbours(path, from: iconRight, barHeight: barHeight)
+                done.leave()
+                DispatchQueue.main.async { bar.cancelMenu() }
+            }
+            button.performClick(nil)  // opens the menu; returns once tracking ends
+            done.notify(queue: .main) {
+                backdrop.orderOut(nil)
+                bar.setVisible(false)
+                self.finish()
+            }
+        }
+    }
+
+    /// Paint over the other apps' menu bar icons right of ours with the bar's own background.
+    private func maskNeighbours(_ url: URL, from x: CGFloat, barHeight: CGFloat) {
+        guard let src = NSImage(contentsOf: url), let rep = src.representations.first else { return }
+        let px = CGFloat(rep.pixelsWide) / src.size.width
+        let w = rep.pixelsWide, h = rep.pixelsHigh
+        // Find where the menu bar ends by walking down the left edge until the colour changes.
+        var barHeight = barHeight
+        if let bits = NSBitmapImageRep(data: (try? Data(contentsOf: url)) ?? Data()), let top = bits.colorAt(x: 1, y: 1) {
+            for y in 2 ..< bits.pixelsHigh {
+                guard let c = bits.colorAt(x: 1, y: y) else { break }
+                if abs(c.brightnessComponent - top.brightnessComponent) > 0.15 {
+                    barHeight = CGFloat(y) / px
+                    break
+                }
+            }
+        }
+        guard let out = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { return }
+        out.size = src.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: out)
+        let full = NSRect(origin: .zero, size: src.size)
+        src.draw(in: full)
+        let strip = NSRect(x: x, y: src.size.height - barHeight, width: src.size.width - x, height: barHeight)
+        let sample = NSRect(x: 1, y: src.size.height - barHeight, width: 1 / px, height: barHeight)
+        src.draw(in: strip, from: sample, operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        try? out.representation(using: .png, properties: [:])?.write(to: url)
+    }
+
+    func showEnrollment() {}
+    func showSettings() {}
+    func quit() {}
+    func pause(minutes: Double) {}
+    func resume() {}
+    @objc func menuCommand(_ sender: NSMenuItem) {}
+    func makeMenu() -> NSMenu { AppMenu.build(state: .watching, paused: false, enrolled: true, target: self) }
 
     private func after(_ s: Double, _ f: @escaping () -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + s, execute: f)

@@ -67,10 +67,61 @@ extension Watcher: IslandStatus {
     var pauseWindow: (started: Date, until: Date)? { Pause.window }
 }
 
+/// What the island and the menu bar icon show for a status: dot colour, words, countdown ring.
+struct StatusDisplay: Equatable {
+    var color: NSColor
+    var label: String
+    var fraction: CGFloat?
+
+    init(_ color: NSColor, _ label: String, _ fraction: CGFloat?) {
+        self.color = color
+        self.label = label
+        self.fraction = fraction
+    }
+
+    var isGreen: Bool { color == green }
+}
+
+extension IslandStatus {
+    var display: StatusDisplay {
+        switch state {
+        case .watching:
+            return StatusDisplay(green, "Watching", nil)
+        case .absent:
+            let left = max(0, lockDelay - absentFor)
+            return StatusDisplay(amber, "Locking in \(Int(left.rounded(.up)))s", CGFloat(left / lockDelay))
+        case .unverified:
+            let left = max(0, lockDelay - absentFor)
+            return StatusDisplay(amber, "Blink to confirm", CGFloat(left / lockDelay))
+        case .paused:
+            guard let w = pauseWindow else { return StatusDisplay(grey, "Paused", nil) }
+            let left = max(0, w.until.timeIntervalSinceNow)
+            let label = left >= 60 ? "Paused · \(Int((left / 60).rounded(.up)))m" : "Paused · \(Int(left.rounded(.up)))s"
+            return StatusDisplay(grey, label, CGFloat(min(1, left / max(1, w.until.timeIntervalSince(w.started)))))
+        case .locked:
+            return StatusDisplay(grey, "Locked", nil)
+        case .noCamera:
+            return StatusDisplay(red, "No camera", nil)
+        case .cameraDenied:
+            return StatusDisplay(red, "Allow camera access", nil)
+        case .notEnrolled:
+            return StatusDisplay(red, "Set up Rualock", nil)
+        case .enrolling:
+            return StatusDisplay(grey, "Learning your face", nil)
+        case .starting:
+            return StatusDisplay(grey, "Starting…", nil)
+        }
+    }
+}
+
+/// The app-level actions, shared by the island and the menu bar icon.
 protocol IslandActions: AnyObject {
     func showEnrollment()
     func showSettings()
     func quit()
+    func pause(minutes: Double)
+    func resume()
+    func makeMenu() -> NSMenu
 }
 
 final class IslandView: NSView {
@@ -78,9 +129,9 @@ final class IslandView: NSView {
     weak var actions: IslandActions?
     /// Drives the breathing glow; replaceable so screenshots are deterministic.
     var clock: () -> CFTimeInterval = CACurrentMediaTime
-    var hover = false
+    var hover = false { didSet { if hover != oldValue { onHoverChange?() } } }
+    var onHoverChange: (() -> Void)?
     var notch = true
-    private var authenticating = false
 
     init(watcher: IslandStatus, height: CGFloat) {
         self.watcher = watcher
@@ -92,32 +143,7 @@ final class IslandView: NSView {
 
     // MARK: state
 
-    private func status() -> (color: NSColor, label: String, fraction: CGFloat?) {
-        switch watcher.state {
-        case .watching:
-            return (green, "Watching", nil)
-        case .absent:
-            let left = max(0, watcher.lockDelay - watcher.absentFor)
-            return (amber, "Locking in \(Int(left.rounded(.up)))s", CGFloat(left / watcher.lockDelay))
-        case .paused:
-            guard let w = watcher.pauseWindow else { return (grey, "Paused", nil) }
-            let left = max(0, w.until.timeIntervalSinceNow)
-            let label = left >= 60 ? "Paused · \(Int((left / 60).rounded(.up)))m" : "Paused · \(Int(left.rounded(.up)))s"
-            return (grey, label, CGFloat(min(1, left / max(1, w.until.timeIntervalSince(w.started)))))
-        case .locked:
-            return (grey, "Locked", nil)
-        case .noCamera:
-            return (red, "No camera", nil)
-        case .cameraDenied:
-            return (red, "Allow camera access", nil)
-        case .notEnrolled:
-            return (red, "Set up Rualock", nil)
-        case .enrolling:
-            return (grey, "Learning your face", nil)
-        case .starting:
-            return (grey, "Starting…", nil)
-        }
-    }
+    private func status() -> StatusDisplay { watcher.display }
 
     private var ringLeft: CGFloat { notch ? K.overlap + K.inner : 2 + K.pad - 1 }
 
@@ -128,9 +154,14 @@ final class IslandView: NSView {
     private var textX: CGFloat { ringLeft + 2 * K.ring + K.textGap }
 
     var expandedWidth: CGFloat {
-        let w = (status().label as NSString).size(withAttributes: [.font: K.font]).width
-        return textX + w + K.textPad + (notch ? K.ear : 0)
+        let label = status().label
+        if label != measured.label {  // measuring text is the costly part of a frame; labels rarely change
+            measured = (label, (label as NSString).size(withAttributes: [.font: K.font]).width)
+        }
+        return textX + measured.width + K.textPad + (notch ? K.ear : 0)
     }
+
+    private var measured: (label: String, width: CGFloat) = ("", 0)
 
     var targetWidth: CGFloat { hover ? expandedWidth : compactWidth }
 
@@ -150,6 +181,7 @@ final class IslandView: NSView {
 
     /// 0 when compact, 1 when fully open; drives the text fade and slide.
     private var reveal: CGFloat {
+        if !hover && bounds.width <= compactWidth + 0.5 { return 0 }
         var t = (bounds.width - compactWidth) / max(1, expandedWidth - compactWidth)
         t = min(1, max(0, t))
         t = min(1, max(0, (t - 0.35) / 0.65))  // text starts once the shape is about a third open
@@ -181,7 +213,8 @@ final class IslandView: NSView {
         NSColor.black.setFill()
         shape().fill()
 
-        let (color, label, fraction) = status()
+        let d = status()
+        let color = d.color, label = d.label, fraction = d.fraction
         let cx = ringLeft + K.ring, cy = bounds.height / 2
 
         if let fraction {  // countdown ring
@@ -195,7 +228,7 @@ final class IslandView: NSView {
             arc.lineWidth = 2
             color.setStroke()
             arc.stroke()
-        } else if color == green {  // soft breathing glow
+        } else if d.isGreen {  // soft breathing glow
             let glow = 0.18 + 0.12 * sin(clock() * 2.2)
             color.withAlphaComponent(glow).setFill()
             NSBezierPath(ovalIn: NSRect(x: cx - K.ring, y: cy - K.ring, width: 2 * K.ring, height: 2 * K.ring)).fill()
@@ -224,52 +257,17 @@ final class IslandView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         switch watcher.state {
-        case .notEnrolled: actions?.showEnrollment()
+        case .notEnrolled, .enrolling: actions?.showEnrollment()
         case .cameraDenied: System.openCameraPrivacySettings()
-        case .paused: resume()
-        case .enrolling: actions?.showEnrollment()
-        default: pause15()
+        case .paused: actions?.resume()
+        default: actions?.pause(minutes: 15)
         }
     }
 
     override func rightMouseDown(with event: NSEvent) {
-        let menu = NSMenu()
-        func add(_ title: String, _ action: Selector) {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = self
-            menu.addItem(item)
-        }
-        if Pause.active {
-            add("Resume", #selector(resume))
-        } else {
-            add("Pause 15 minutes", #selector(pause15))
-            add("Pause 1 hour", #selector(pause60))
-        }
-        menu.addItem(.separator())
-        add("Lock now", #selector(lockNow))
-        add("Settings…", #selector(settings))
-        menu.addItem(.separator())
-        add("Quit Rualock", #selector(quit))
+        guard let menu = actions?.makeMenu() else { return }
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
-
-    /// Pausing turns protection off, so it needs Touch ID (or the Mac password).
-    private func pause(_ minutes: Double) {
-        guard !authenticating, watcher.state != .notEnrolled else { return }
-        authenticating = true
-        let what = minutes == 1 ? "1 minute" : "\(Int(minutes)) minutes"
-        System.authenticate("pause Rualock for \(what)") { [weak self] ok in
-            self?.authenticating = false
-            if ok { Pause.start(minutes: minutes) }
-        }
-    }
-
-    @objc private func pause15() { pause(15) }
-    @objc private func pause60() { pause(60) }
-    @objc private func resume() { Pause.clear() }
-    @objc private func lockNow() { System.lockScreen() }
-    @objc private func settings() { actions?.showSettings() }
-    @objc private func quit() { actions?.quit() }
 }
 
 /// Owns the panel and runs the 60 Hz spring animation.
@@ -280,6 +278,8 @@ final class IslandController {
     private var velocity: CGFloat = 0
     private var last = CACurrentMediaTime()
     private var timer: Timer?
+    private var geometry = Geometry.current()
+    private var geometryAt: CFTimeInterval = 0
 
     init(watcher: Watcher) {
         let g = Geometry.current()
@@ -301,27 +301,52 @@ final class IslandController {
         panel.contentView = view
     }
 
-    func show() {
-        panel.orderFrontRegardless()
-        let t = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
+    /// Show or hide the light next to the camera. Hidden, it costs nothing: the animation timer stops.
+    func setVisible(_ visible: Bool) {
+        if visible {
+            guard timer == nil else { return }
+            geometryAt = 0
+            panel.orderFrontRegardless()
+            view.onHoverChange = { [weak self] in self?.run(at: 60) }
+            run(at: 15)
+        } else {
+            timer?.invalidate()
+            timer = nil
+            panel.orderOut(nil)
+        }
+    }
+
+    /// 60 Hz while the shape springs open or closed, 15 Hz otherwise (the glow and the ring move slowly).
+    private func run(at hz: Double) {
+        if let timer, abs(timer.timeInterval - 1 / hz) < 1e-6 { return }
+        timer?.invalidate()
+        let t = Timer(timeInterval: 1 / hz, repeats: true) { [weak self] _ in self?.tick() }
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        last = CACurrentMediaTime()
     }
 
     private func tick() {
         let now = CACurrentMediaTime()
-        let dt = CGFloat(min(1.0 / 30, now - last))
+        let dt = CGFloat(min(1.0 / 15, now - last))
         last = now
 
-        let g = Geometry.current()  // follows display changes
+        if now - geometryAt > 1 {  // follows display changes, checked once a second
+            geometry = Geometry.current()
+            geometryAt = now
+        }
+        let g = geometry
         view.notch = g.notch
 
-        IslandView.spring(width: &width, velocity: &velocity, target: view.targetWidth, dt: dt)
+        let target = view.targetWidth
+        IslandView.spring(width: &width, velocity: &velocity, target: target, dt: dt)
+        let animating = width != target || velocity != 0
 
         let f = panel.frame
         if abs(f.width - width) > 0.01 || abs(f.minX - g.x) > 0.01 || abs(f.minY - g.y) > 0.01 || abs(f.height - g.height) > 0.01 {
             panel.setFrame(NSRect(x: g.x, y: g.y, width: width, height: g.height), display: true)
         }
         view.needsDisplay = true
+        run(at: animating ? 60 : 15)
     }
 }

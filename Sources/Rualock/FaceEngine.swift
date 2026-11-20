@@ -25,28 +25,72 @@ final class FaceEngine {
         model = try MLModel(contentsOf: url, configuration: config)
     }
 
-    /// Embeddings (unit length) for up to `limit` faces, largest first, plus how many faces were seen.
-    func embeddings(in buffer: CVPixelBuffer, limit: Int = 3) -> (count: Int, embeddings: [[Float]]) {
+    struct Face {
+        /// Normalised Vision coordinates (0-1, bottom-left origin).
+        var box: CGRect
+        /// Eye height over width, averaged over both eyes; drops sharply during a blink.
+        var openness: Double?
+        /// Unit-length SFace embedding, when requested.
+        var embedding: [Float]?
+    }
+
+    /// Faces found by the last full detection; frames in between only refit landmarks inside them.
+    private var known: [VNFaceObservation] = []
+
+    private static let neuralEngine: MLComputeDevice? = {
+        guard let devices = try? VNDetectFaceLandmarksRequest().supportedComputeStageDevices[.main] else { return nil }
+        return devices.first { if case .neuralEngine = $0 { return true } else { return false } }
+    }()
+
+    /// Up to `limit` faces, largest first, with eye openness and (if `embed`) embeddings,
+    /// plus how many faces were seen in total. With `embed` it also re-detects faces; without, it only
+    /// refits landmarks inside the faces found last time, which is much cheaper (for blink tracking).
+    func analyze(_ buffer: CVPixelBuffer, embed wantEmbeddings: Bool, limit: Int = 3) -> (count: Int, faces: [Face]) {
         let request = VNDetectFaceLandmarksRequest()
+        if let ne = Self.neuralEngine { request.setComputeDevice(ne, for: .main) }
+        if !wantEmbeddings && known.isEmpty { return (0, []) }  // nobody at the last detection: wait for the next
+        let refit = !wantEmbeddings
+        if refit { request.inputFaceObservations = known }
         do {
             try VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up).perform([request])
         } catch {
             return (0, [])
         }
-        let faces = (request.results ?? []).sorted {
+        let observations = (request.results ?? []).filter { $0.landmarks != nil }.sorted {
             $0.boundingBox.width * $0.boundingBox.height > $1.boundingBox.width * $1.boundingBox.height
         }
+        if !refit { known = Array(observations.prefix(limit)) }
         let w = CVPixelBufferGetWidth(buffer), h = CVPixelBufferGetHeight(buffer)
-        var out: [[Float]] = []
-        CVPixelBufferLockBaseAddress(buffer, .readOnly)
-        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
-        for face in faces.prefix(limit) {
-            guard let points = Self.fivePoints(face, width: w, height: h),
-                  let input = Self.align(buffer, points: points),
-                  let e = embed(input) else { continue }
-            out.append(e)
+        if wantEmbeddings { CVPixelBufferLockBaseAddress(buffer, .readOnly) }
+        defer { if wantEmbeddings { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) } }
+        var out: [Face] = []
+        for o in observations.prefix(limit) {
+            var face = Face(box: o.boundingBox, openness: Self.openness(o, width: w, height: h), embedding: nil)
+            if wantEmbeddings, let points = Self.fivePoints(o, width: w, height: h), let input = Self.align(buffer, points: points) {
+                face.embedding = embed(input)
+            }
+            out.append(face)
         }
-        return (faces.count, out)
+        return (observations.count, out)
+    }
+
+    /// Embeddings (unit length) for up to `limit` faces, largest first, plus how many faces were seen.
+    func embeddings(in buffer: CVPixelBuffer, limit: Int = 3) -> (count: Int, embeddings: [[Float]]) {
+        let (count, faces) = analyze(buffer, embed: true, limit: limit)
+        return (count, faces.compactMap(\.embedding))
+    }
+
+    private static func openness(_ face: VNFaceObservation, width: Int, height: Int) -> Double? {
+        guard let lm = face.landmarks, let l = lm.leftEye, let r = lm.rightEye else { return nil }
+        let size = CGSize(width: width, height: height)
+        func ratio(_ region: VNFaceLandmarkRegion2D) -> Double? {
+            let p = region.pointsInImage(imageSize: size)
+            guard let minX = p.map(\.x).min(), let maxX = p.map(\.x).max(),
+                  let minY = p.map(\.y).min(), let maxY = p.map(\.y).max(), maxX - minX > 1 else { return nil }
+            return Double((maxY - minY) / (maxX - minX))
+        }
+        guard let a = ratio(l), let b = ratio(r) else { return nil }
+        return (a + b) / 2
     }
 
     /// Eye centres (image-left first), nose tip, mouth corners, in top-left pixel coordinates.

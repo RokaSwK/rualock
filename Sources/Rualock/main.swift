@@ -3,6 +3,8 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
     private var watcher: Watcher!
     private var island: IslandController!
+    private var menuBar: MenuBarController!
+    private var authenticating = false
     private var enroll: EnrollWindowController?
     private var settings: SettingsWindowController?
     private var allowQuit = false
@@ -11,7 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
             .filter { $0 != NSRunningApplication.current }
         if !others.isEmpty {
-            note("already running; exiting")
+            // Opening Rualock again (from Finder, Spotlight, Launchpad) brings up its Settings.
+            DistributedNotificationCenter.default().postNotificationName(Self.showSettingsNote, object: nil, deliverImmediately: true)
+            note("already running; showing its settings")
             allowQuit = true
             NSApp.terminate(nil)
             return
@@ -39,8 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
         watcher = Watcher(engine: engine)
         island = IslandController(watcher: watcher)
         island.view.actions = self
-        island.show()
+        menuBar = MenuBarController(status: watcher, actions: self)
+        menuBar.onRemoved = { [weak self] in  // ⌘-dragged out of the menu bar
+            Prefs.showMenuBarIcon = false
+            if !Prefs.showIsland { Prefs.showIsland = true }
+            self?.applyDisplay()
+        }
+        applyDisplay()
         watcher.start()
+
+        DistributedNotificationCenter.default().addObserver(forName: Self.showSettingsNote, object: nil, queue: .main) {
+            [weak self] _ in self?.showSettings()
+        }
 
         if !Prefs.didOfferLoginItem {  // on by default; switch off in Settings
             Prefs.didOfferLoginItem = true
@@ -71,11 +85,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
         }
     }
 
+    static let showSettingsNote = Notification.Name("com.rualock.mac.showSettings")
+
+    /// Show the light next to the camera and/or the menu bar icon, as set in Settings.
+    func applyDisplay() {
+        island.setVisible(Prefs.showIsland)
+        menuBar.setVisible(Prefs.showMenuBarIcon)
+        settings?.refresh()
+    }
+
     func showSettings() {
         if settings == nil {
-            settings = SettingsWindowController { [weak self] in self?.showEnrollment() }
+            settings = SettingsWindowController(
+                onReenroll: { [weak self] in self?.showEnrollment() },
+                onDisplayChange: { [weak self] in self?.applyDisplay() }
+            )
         }
         settings?.present()
+    }
+
+    // MARK: actions
+
+    /// Pausing turns protection off, so it needs Touch ID (or the Mac password).
+    func pause(minutes: Double) {
+        guard !authenticating, !watcher.enrolled.isEmpty else { return }
+        authenticating = true
+        let what = minutes == 1 ? "1 minute" : "\(Int(minutes)) minutes"
+        System.authenticate("pause Rualock for \(what)") { [weak self] ok in
+            self?.authenticating = false
+            if ok { Pause.start(minutes: minutes) }
+        }
+    }
+
+    func resume() {
+        Pause.clear()
+        note("resumed")
+    }
+
+    /// The menu used by the menu bar icon and by right-clicking the light next to the camera.
+    func makeMenu() -> NSMenu {
+        AppMenu.build(state: watcher.state, paused: Pause.active, enrolled: !watcher.enrolled.isEmpty, target: self)
+    }
+
+    @objc func menuCommand(_ sender: NSMenuItem) {
+        switch AppMenu.Command(rawValue: sender.tag) {
+        case .enroll: showEnrollment()
+        case .camera: System.openCameraPrivacySettings()
+        case .resume: resume()
+        case .pause15: pause(minutes: 15)
+        case .pause60: pause(minutes: 60)
+        case .lock: System.lockScreen()
+        case .settings: showSettings()
+        case .quit: quit()
+        case nil: break
+        }
     }
 
     /// Quitting turns protection off, so it needs Touch ID too.
@@ -86,6 +149,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, IslandActions {
             self?.allowQuit = true
             NSApp.terminate(nil)
         }
+    }
+
+    /// Opening Rualock while it's running (Finder, Spotlight, Launchpad) brings up its Settings.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showSettings()
+        return false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

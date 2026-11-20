@@ -21,6 +21,27 @@ enum Prefs {
     /// Log "would lock" instead of locking. Set with `-dryRun YES` on the command line.
     static var dryRun: Bool { d.bool(forKey: "dryRun") }
 
+    /// Log liveness decisions (new face, blink, identity change). Set with `-debugLiveness YES`.
+    static var debugLiveness: Bool { d.bool(forKey: "debugLiveness") }
+
+    /// Count a face as yours only once it has blinked, so a photo can't stand in for you.
+    static var requireBlink: Bool {
+        get { d.object(forKey: "requireBlink") as? Bool ?? true }
+        set { d.set(newValue, forKey: "requireBlink") }
+    }
+
+    /// The status light that grows out of the camera notch.
+    static var showIsland: Bool {
+        get { d.object(forKey: "showIsland") as? Bool ?? true }
+        set { d.set(newValue, forKey: "showIsland") }
+    }
+
+    /// The icon in the menu bar.
+    static var showMenuBarIcon: Bool {
+        get { d.object(forKey: "showMenuBarIcon") as? Bool ?? true }
+        set { d.set(newValue, forKey: "showMenuBarIcon") }
+    }
+
     static var didOfferLoginItem: Bool {
         get { d.bool(forKey: "didOfferLoginItem") }
         set { d.set(newValue, forKey: "didOfferLoginItem") }

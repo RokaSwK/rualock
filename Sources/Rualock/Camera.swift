@@ -71,12 +71,13 @@ final class Camera: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         return true
     }
 
-    /// Ask for 10 fps when the camera supports it: less work and better low-light exposure.
+    /// Ask for a low frame rate when the camera supports it: enough to catch a blink (about 0.1-0.3 s),
+    /// less work than 30 fps, and better low-light exposure.
     private func lowerFrameRate(_ device: AVCaptureDevice) {
-        guard device.activeFormat.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= 10 && $0.maxFrameRate >= 10 }),
+        guard device.activeFormat.videoSupportedFrameRateRanges.contains(where: { $0.minFrameRate <= Watcher.watchFPS && $0.maxFrameRate >= Watcher.watchFPS }),
               (try? device.lockForConfiguration()) != nil else { return }
-        device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 10)
-        device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: 10)
+        device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(Watcher.watchFPS))
+        device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(Watcher.watchFPS))
         device.unlockForConfiguration()
     }
 
