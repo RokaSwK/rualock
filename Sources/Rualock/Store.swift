@@ -46,10 +46,20 @@ enum Prefs {
         set { d.set(newValue, forKey: "showIsland") }
     }
 
-    /// How tall the status light is beside the notch.
-    static var islandSize: IslandSize {
-        get { d.string(forKey: "islandSize").flatMap(IslandSize.init) ?? .medium }
-        set { d.set(newValue.rawValue, forKey: "islandSize") }
+    /// How tall the status light is beside the notch, in points. Anything from just around the ring
+    /// up to the notch's full height; taller values are capped at the notch.
+    static var islandHeight: Double {
+        get {
+            let v = d.double(forKey: "islandHeight")
+            if v > 0 { return v }
+            switch d.string(forKey: "islandSize") {  // the earlier four-step setting
+            case "short"?: return 17
+            case "tall"?: return 26
+            case "notch"?: return 100
+            default: return 21
+            }
+        }
+        set { d.set(newValue, forKey: "islandHeight") }
     }
 
     /// The icon in the menu bar.
@@ -61,21 +71,6 @@ enum Prefs {
     static var didOfferLoginItem: Bool {
         get { d.bool(forKey: "didOfferLoginItem") }
         set { d.set(newValue, forKey: "didOfferLoginItem") }
-    }
-}
-
-/// Heights for the status light: the ring with a small, medium or large margin above and below,
-/// or as tall as the notch.
-enum IslandSize: String, CaseIterable {
-    case short, medium, tall, notch
-
-    var title: String {
-        switch self {
-        case .short: return "Short"
-        case .medium: return "Medium"
-        case .tall: return "Tall"
-        case .notch: return "As tall as the notch"
-        }
     }
 }
 

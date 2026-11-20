@@ -172,16 +172,20 @@ final class IslandView: NSView {
     /// How far the window starts left of the notch edge (the part tucked under the notch).
     static let notchOverlap = K.overlap
 
-    /// The ring plus a margin above and below (see `IslandSize`), never taller than the notch.
-    static func height(notch: CGFloat, size: IslandSize = Prefs.islandSize) -> CGFloat {
-        let margin: CGFloat
-        switch size {
-        case .short: margin = 2
-        case .medium: margin = 4
-        case .tall: margin = 6.5
-        case .notch: return notch - K.notchTrim
-        }
-        return min(notch - K.notchTrim, 2 * (K.ring + 1 + margin))
+    /// The shortest the light can be: the countdown ring and a point above and below it.
+    static let minHeight = 2 * (K.ring + K.inner)
+
+    /// The tallest it can be beside a notch this tall: a touch shorter, to match the camera housing.
+    static func maxHeight(notch: CGFloat) -> CGFloat { notch - K.notchTrim }
+
+    /// The tallest on this Mac's notch (or a typical notch if no screen has one), for the Settings slider.
+    static var maxHeightHere: CGFloat {
+        maxHeight(notch: NSScreen.screens.map(\.safeAreaInsets.top).max().flatMap { $0 > 0 ? $0 : nil } ?? 32)
+    }
+
+    /// The light's height beside a notch, from `Prefs.islandHeight`, between `minHeight` and the notch.
+    static func height(notch: CGFloat, preferred: CGFloat = CGFloat(Prefs.islandHeight)) -> CGFloat {
+        min(maxHeight(notch: notch), max(minHeight, preferred))
     }
 
     /// One step of the hover spring: a little overshoot, then it settles, like the Dynamic Island.

@@ -4,7 +4,8 @@ final class SettingsWindowController: NSWindowController {
     private let delay = NSPopUpButton()
     private let login = NSButton(checkboxWithTitle: "Start Rualock when you log in", target: nil, action: nil)
     private let island = NSButton(checkboxWithTitle: "Status light next to the camera", target: nil, action: nil)
-    private let islandSize = NSPopUpButton()
+    private let islandHeight = NSSlider()
+    private let islandHeightValue = NSTextField(labelWithString: "")
     private let menuBar = NSButton(checkboxWithTitle: "Icon in the menu bar", target: nil, action: nil)
     private let diagnostics = NSButton(checkboxWithTitle: "Record diagnostics for tuning (numbers only, stays on this Mac)", target: nil, action: nil)
     private let action = NSPopUpButton()
@@ -45,9 +46,16 @@ final class SettingsWindowController: NSWindowController {
             b.target = self
             b.action = #selector(displayChanged)
         }
-        islandSize.addItems(withTitles: IslandSize.allCases.map(\.title))
-        islandSize.target = self
-        islandSize.action = #selector(islandSizeChanged)
+        islandHeight.minValue = Double(IslandView.minHeight)
+        islandHeight.maxValue = Double(IslandView.maxHeightHere)
+        islandHeight.isContinuous = true  // the light resizes as you drag
+        islandHeight.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        islandHeight.target = self
+        islandHeight.action = #selector(islandHeightChanged)
+        islandHeightValue.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        islandHeightValue.textColor = .secondaryLabelColor
+        let heightRow = NSStackView(views: [islandHeight, islandHeightValue])
+        heightRow.spacing = 8
         let reenroll = NSButton(title: "Re-enrol Face…", target: self, action: #selector(reenrollClicked))
 
         let grid = NSGridView(views: [
@@ -56,7 +64,7 @@ final class SettingsWindowController: NSWindowController {
             [label("Security:"), blink],
             [label("Show:"), island],
             [NSGridCell.emptyContentView, menuBar],
-            [label("Light height:"), islandSize],
+            [label("Light height:"), heightRow],
             [label("General:"), login],
             [label("Face:"), reenroll],
             [label("Diagnostics:"), diagnostics],
@@ -111,8 +119,10 @@ final class SettingsWindowController: NSWindowController {
         menuBar.state = Prefs.showMenuBarIcon ? .on : .off
         island.isEnabled = Prefs.showMenuBarIcon
         menuBar.isEnabled = Prefs.showIsland
-        islandSize.selectItem(at: IslandSize.allCases.firstIndex(of: Prefs.islandSize) ?? 1)
-        islandSize.isEnabled = Prefs.showIsland
+        islandHeight.maxValue = Double(IslandView.maxHeightHere)
+        islandHeight.doubleValue = min(Prefs.islandHeight, islandHeight.maxValue)
+        islandHeight.isEnabled = Prefs.showIsland
+        showHeight()
     }
 
     @objc private func diagnosticsChanged() {
@@ -165,10 +175,16 @@ final class SettingsWindowController: NSWindowController {
         onDisplayChange()
     }
 
-    @objc private func islandSizeChanged() {
-        Prefs.islandSize = IslandSize.allCases[islandSize.indexOfSelectedItem]
-        note("status light height: \(Prefs.islandSize.rawValue)")
+    @objc private func islandHeightChanged() {
+        Prefs.islandHeight = (islandHeight.doubleValue * 2).rounded() / 2  // half-point steps
+        showHeight()
         onDisplayChange()
+        if NSApp.currentEvent?.type == .leftMouseUp { note("status light height: \(Prefs.islandHeight) pt") }
+    }
+
+    private func showHeight() {
+        let full = Prefs.islandHeight >= islandHeight.maxValue - 0.25
+        islandHeightValue.stringValue = full ? "Notch" : String(format: "%g pt", min(Prefs.islandHeight, islandHeight.maxValue))
     }
 
     @objc private func loginChanged() {
