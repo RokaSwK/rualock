@@ -28,10 +28,12 @@ final class FaceEngine {
     struct Face {
         /// Normalised Vision coordinates (0-1, bottom-left origin).
         var box: CGRect
-        /// Eye height over width, averaged over both eyes; drops sharply during a blink.
+        /// Eye height over the eyes-to-mouth distance (see `FaceGeometry`); drops sharply in a blink.
         var openness: Double?
         /// Unit-length SFace embedding, when requested.
         var embedding: [Float]?
+        /// Inner-lip height over width: near 0 closed, larger when talking.
+        var mouthOpen: Double? = nil
     }
 
     /// Faces found by the last full detection; frames in between only refit landmarks inside them.
@@ -65,7 +67,8 @@ final class FaceEngine {
         defer { if wantEmbeddings { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) } }
         var out: [Face] = []
         for o in observations.prefix(limit) {
-            var face = Face(box: o.boundingBox, openness: Self.openness(o, width: w, height: h), embedding: nil)
+            let (eyes, mouth) = Self.eyesAndMouth(o, width: w, height: h)
+            var face = Face(box: o.boundingBox, openness: eyes, embedding: nil, mouthOpen: mouth)
             if wantEmbeddings, let points = Self.fivePoints(o, width: w, height: h), let input = Self.align(buffer, points: points) {
                 face.embedding = embed(input)
             }
@@ -80,17 +83,15 @@ final class FaceEngine {
         return (count, faces.compactMap(\.embedding))
     }
 
-    private static func openness(_ face: VNFaceObservation, width: Int, height: Int) -> Double? {
-        guard let lm = face.landmarks, let l = lm.leftEye, let r = lm.rightEye else { return nil }
+    /// Eye openness and mouth opening, measured in the face's own frame (see `FaceGeometry`).
+    private static func eyesAndMouth(_ face: VNFaceObservation, width: Int, height: Int) -> (eyes: Double?, mouth: Double?) {
+        guard let lm = face.landmarks, let l = lm.leftEye, let r = lm.rightEye else { return (nil, nil) }
         let size = CGSize(width: width, height: height)
-        func ratio(_ region: VNFaceLandmarkRegion2D) -> Double? {
-            let p = region.pointsInImage(imageSize: size)
-            guard let minX = p.map(\.x).min(), let maxX = p.map(\.x).max(),
-                  let minY = p.map(\.y).min(), let maxY = p.map(\.y).max(), maxX - minX > 1 else { return nil }
-            return Double((maxY - minY) / (maxX - minX))
-        }
-        guard let a = ratio(l), let b = ratio(r) else { return nil }
-        return (a + b) / 2
+        let left = l.pointsInImage(imageSize: size), right = r.pointsInImage(imageSize: size)
+        let inner = lm.innerLips?.pointsInImage(imageSize: size) ?? []
+        let outer = lm.outerLips?.pointsInImage(imageSize: size) ?? []
+        return (FaceGeometry.eyeOpenness(leftEye: left, rightEye: right, mouth: outer.isEmpty ? inner : outer),
+                FaceGeometry.mouthOpening(innerLips: inner, leftEye: left, rightEye: right))
     }
 
     /// Eye centres (image-left first), nose tip, mouth corners, in top-left pixel coordinates.

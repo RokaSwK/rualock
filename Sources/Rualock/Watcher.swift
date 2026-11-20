@@ -4,7 +4,7 @@ import AVFoundation
 /// The watch-and-lock loop. Runs a 4 Hz tick on the main thread; face checks run on the camera's queue.
 final class Watcher {
     enum State: Equatable {
-        case starting, watching, absent, unverified, paused, locked, noCamera, cameraDenied, notEnrolled, enrolling
+        case starting, watching, typing, absent, unverified, paused, locked, noCamera, cameraDenied, notEnrolled, enrolling
     }
 
     /// What the latest frames showed.
@@ -32,7 +32,16 @@ final class Watcher {
     private var embeddings: [[Float]] = Enrollment.load()
     private var enrollSink: ((Int, [[Float]]) -> Void)?
 
+    /// The start of the current countdown: your confirmed face, or a fresh start (unlock, pause, wake).
     private var lastSeen = Date()
+    /// When your confirmed face was last in view since the last fresh start; nil until then. Typing
+    /// only carries on from this, never from a fresh start.
+    private var lastConfirmed: Date?
+    /// Your confirmed face, or keyboard and mouse input carrying straight on from it.
+    private var chain = PresenceChain(at: Date())
+    private var presence: Date { chain.presence }
+    private var typing: Bool { chain.typing }
+    private var lockIssued = false
     private var lastFrame = Date()
     private var lastTick = Date()
     private var seen: Seen?
@@ -54,8 +63,11 @@ final class Watcher {
     init(engine: FaceEngine) {
         self.engine = engine
         camera.onFrame = { [weak self] buffer in self?.frame(buffer) }
+        FaceTrack.log = { Diagnostics.shared.event($0, $1) }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) {
-            [weak self] _ in self?.lastSeen = Date()
+            [weak self] _ in
+            self?.resetClock()
+            Diagnostics.shared.event("wake")
         }
     }
 
@@ -67,7 +79,17 @@ final class Watcher {
         let mode = Prefs.dryRun ? " (dry run)" : ""
         let blink = Prefs.requireBlink ? ", blink required" : ""
         note("watching; locking after \(Int(Prefs.lockDelay))s away\(blink)\(mode)")
+        let version = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
+        Diagnostics.shared.event("start", [
+            "version": version, "lockDelay": Prefs.lockDelay, "threshold": Double(Prefs.threshold),
+            "requireBlink": Prefs.requireBlink, "dryRun": Prefs.dryRun, "samples": embeddings.count,
+        ])
         tick()
+    }
+
+    /// You clicked Resume: you're here, like after an unlock.
+    func resumedByYou() {
+        trustUntil = Date().addingTimeInterval(Self.unlockTrust)
     }
 
     // MARK: enrolment
@@ -93,7 +115,8 @@ final class Watcher {
                 note("could not save enrolment: \(error.localizedDescription)")
             }
         }
-        lastSeen = Date()
+        if let samples, !samples.isEmpty { Diagnostics.shared.event("enrolled", ["samples": samples.count]) }
+        resetClock()
         seen = nil
         track = FaceTrack()
         state = .starting
@@ -104,7 +127,7 @@ final class Watcher {
 
     private func tick() {
         let now = Date()
-        if now.timeIntervalSince(lastTick) > 5 { lastSeen = now }  // woke from sleep or stalled: not absence
+        if now.timeIntervalSince(lastTick) > 5 { resetClock() }  // woke from sleep or stalled: not absence
         lastTick = now
 
         if enrollSink != nil {
@@ -114,14 +137,18 @@ final class Watcher {
 
         let locked = System.screenLocked
         if locked {
+            if !wasLocked { Diagnostics.shared.event("screen_locked", ["byRualock": lockIssued]) }
             wasLocked = true
         } else if wasLocked {  // just unlocked: the face in front of the camera is you
             wasLocked = false
+            lockIssued = false
             trustUntil = now.addingTimeInterval(Self.unlockTrust)
+            Diagnostics.shared.unlocked()
         }
         if locked && Pause.active {  // a pause ends when you lock, so logging back in resumes watching
             Pause.clear()
             note("screen locked: pause ended")
+            Diagnostics.shared.event("pause_ended", ["by": "lock"])
         }
 
         if embeddings.isEmpty {
@@ -153,35 +180,46 @@ final class Watcher {
                 return
             }
             lastFrame = now
-            lastSeen = now
+            resetClock()
+            // Right after an unlock or a click on Resume it's you, even before the camera finds your
+            // face: typing counts straight away (you often start typing, looking down, as you unlock).
+            if let until = trustUntil, now < until { lastConfirmed = now }
             seen = nil
             track = FaceTrack()
         }
 
         // The camera failing must never lock you out: no frames means no countdown.
         if now.timeIntervalSince(lastFrame) > 4 {
-            if state != .noCamera { note("camera stopped sending frames; reopening") }
+            if state != .noCamera {
+                note("camera stopped sending frames; reopening")
+                Diagnostics.shared.event("camera_stalled")
+            }
             state = .noCamera
             absentFor = 0
-            lastSeen = now
+            resetClock()
             camera.reset()
             return
         }
 
+        followInput(now)
         lockDelay = Prefs.lockDelay + (seen == .unverified ? Self.blinkGrace : 0)
-        if Prefs.debugLiveness, seen == .unverified, Int(now.timeIntervalSince(lastSeen) * 4) % 8 == 0 {
-            note(String(format: "liveness: waiting for a blink, %.0f s; blink mode %@", now.timeIntervalSince(lastSeen), blinkModeOn ? "on" : "off"))
-        }
-        absentFor = now.timeIntervalSince(lastSeen)
+        absentFor = now.timeIntervalSince(presence)
         if absentFor >= lockDelay {
+            let reason = seen == .unverified ? "no blink" : now.timeIntervalSince(lastSeen) > absentFor + 0.5 ? "input stopped" : "face gone"
+            let info: [String: Any] = [
+                "absentFor": absentFor, "lockDelay": lockDelay, "sinceFace": now.timeIntervalSince(lastSeen),
+                "inputIdle": System.inputIdle, "seen": "\(seen.map { "\($0)" } ?? "none")", "track": track.why,
+                "trackVerified": track.verified, "trackMatched": track.matched, "dryRun": Prefs.dryRun,
+            ]
+            Diagnostics.shared.locked(reason: reason, info)
             if Prefs.dryRun {
-                note("would lock (dry run)")
+                note("would lock: \(reason) (dry run)")
             } else {
-                let why = seen == .unverified ? "no blink" : "face gone"
-                note("\(why) for \(Int(absentFor))s: locking")
+                note("\(reason) for \(Int(absentFor))s: locking")
+                lockIssued = true
                 System.lockScreen()
             }
-            lastSeen = now
+            resetClock()
             absentFor = 0
             state = Prefs.dryRun ? .watching : .locked
             return
@@ -189,16 +227,35 @@ final class Watcher {
         switch seen {
         case .none: state = .starting
         case .you: state = .watching
-        case .unverified: state = .unverified
-        case .nobody: state = .absent
+        case .unverified: state = typing ? .typing : .unverified
+        case .nobody: state = typing ? .typing : .absent
         }
+    }
+
+    /// Let keyboard and mouse input carry on from your confirmed face (see `PresenceChain`).
+    private func followInput(_ now: Date) {
+        let idle = System.inputIdle
+        let change = chain.update(now: now, faceInView: seen == .you, faceAt: lastConfirmed ?? .distantPast,
+                                  lastInput: now.addingTimeInterval(-idle))
+        switch change {
+        case "start"?: Diagnostics.shared.event("typing_start", ["sinceFace": now.timeIntervalSince(lastSeen)])
+        case let why?: Diagnostics.shared.event("typing_end", ["why": why, "idle": idle, "sinceFace": now.timeIntervalSince(lastSeen)])
+        case nil: break
+        }
+    }
+
+    /// Start the countdown afresh: after an unlock, a pause, waking, or a camera restart.
+    private func resetClock() {
+        lastSeen = Date()
+        lastConfirmed = nil
+        chain = PresenceChain(at: lastSeen)
     }
 
     private func idle(_ s: State) {
         state = s
         absentFor = 0
         camera.stop()
-        lastSeen = Date()  // grace period once unlocked or resumed
+        resetClock()  // grace period once unlocked or resumed
         seen = nil
         track = FaceTrack()
         setBlinkMode(false)
@@ -237,32 +294,31 @@ final class Watcher {
             sink(count, faces.compactMap(\.embedding))
             return
         }
-        guard let face = track.update(faces, at: t, detected: recognised) else {
+        let face = track.update(faces, at: t, detected: recognised)
+        var score: Float?
+        if let face, recognised {
+            let threshold = Prefs.threshold
+            let best = { (f: FaceEngine.Face) -> Float? in
+                f.embedding.map { e in self.embeddings.map { FaceEngine.similarity($0, e) }.max() ?? 0 }
+            }
+            score = best(face)
+            if (score ?? 0) < threshold, let you = faces.first(where: { (best($0) ?? 0) >= threshold }) {
+                track.restart(with: you, at: t)  // you're in view, but the tracked face is someone else's
+                track.setMatched(true)
+                score = best(you)
+            } else {
+                track.setMatched((score ?? 0) >= threshold, score: score)
+            }
+        }
+        defer { record(count: count, face: face, score: score, recognised: recognised) }
+
+        guard face != nil else {
             // Nobody in view. A face missing for a frame or two (often during a blink) keeps its state.
             if t - track.lastSeen > FaceTrack.maxGap || seen == nil {
                 seen = .nobody
                 setBlinkMode(false)
             }
             return
-        }
-        if recognised {
-            let threshold = Prefs.threshold
-            let isYou = { (f: FaceEngine.Face) -> Bool in
-                guard let e = f.embedding else { return false }
-                return self.embeddings.contains { FaceEngine.similarity($0, e) >= threshold }
-            }
-            if Prefs.debugLiveness, let e = face.embedding {
-                let best = embeddings.map { FaceEngine.similarity($0, e) }.max() ?? 0
-                if best < threshold + 0.1 { note(String(format: "liveness: low match %.2f", best)) }
-            } else if Prefs.debugLiveness {
-                note("liveness: no embedding for the tracked face")
-            }
-            if !isYou(face), let you = faces.first(where: isYou) {
-                track.restart(with: you, at: t)  // you're in view, but the tracked face is someone else's
-                track.setMatched(true)
-            } else {
-                track.setMatched(isYou(face))
-            }
         }
         guard track.matched else {
             seen = .nobody
@@ -273,17 +329,31 @@ final class Watcher {
             track.trust()
             trustUntil = nil
         }
-        if Prefs.debugLiveness, seen != (track.verified ? .you : .unverified) {
-            note("liveness: \(track.verified ? "verified" : "needs a blink") (\(track.why))")
-        }
         if !Prefs.requireBlink || track.verified {
             seen = .you
             lastSeen = now
+            lastConfirmed = now
             setBlinkMode(false)
         } else {
             seen = .unverified
             setBlinkMode(true)
         }
+    }
+
+    /// One diagnostics sample per handled frame (4 a second, 10 while waiting for a blink).
+    private func record(count: Int, face: FaceEngine.Face?, score: Float?, recognised: Bool) {
+        var r: [String: Any] = [
+            "state": "\(state)", "seen": seen.map { "\($0)" } ?? "none", "faces": count, "rec": recognised,
+            "verified": track.verified, "matched": track.matched, "why": track.why, "blinkMode": blinkModeOn,
+            "idle": System.inputIdle, "absent": absentFor, "delay": lockDelay, "typing": typing,
+        ]
+        if let score { r["score"] = Double(score) }
+        if let face {
+            r["size"] = Double(face.box.width)
+            if let o = face.openness { r["eyes"] = o }
+            if let m = face.mouthOpen { r["mouthOpen"] = m }
+        }
+        Diagnostics.shared.sample(r)
     }
 
     private var blinkModeOn: Bool {

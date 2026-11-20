@@ -21,8 +21,11 @@ enum Prefs {
     /// Log "would lock" instead of locking. Set with `-dryRun YES` on the command line.
     static var dryRun: Bool { d.bool(forKey: "dryRun") }
 
-    /// Log liveness decisions (new face, blink, identity change). Set with `-debugLiveness YES`.
-    static var debugLiveness: Bool { d.bool(forKey: "debugLiveness") }
+    /// Record numbers for tuning in ~/Library/Application Support/Rualock/Diagnostics. See `Diagnostics`.
+    static var recordDiagnostics: Bool {
+        get { d.object(forKey: "recordDiagnostics") as? Bool ?? true }
+        set { d.set(newValue, forKey: "recordDiagnostics") }
+    }
 
     /// Count a face as yours only once it has blinked, so a photo can't stand in for you.
     static var requireBlink: Bool {
