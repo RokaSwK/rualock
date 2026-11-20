@@ -1,0 +1,8 @@
+Rualock bundles a Core ML conversion of SFace (face_recognition_sface_2021dec),
+from the OpenCV model zoo: https://github.com/opencv/opencv_zoo
+
+SFace is licensed under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0
+
+The model is downloaded and converted at build time by scripts/convert_model.py;
+it is not stored in this repository.

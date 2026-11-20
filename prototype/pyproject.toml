@@ -1,0 +1,22 @@
+[project]
+name = "localsec"
+version = "0.1.0"
+description = "Lock the Mac when your face leaves the webcam"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python>=4.10",
+    "pyobjc-framework-AVFoundation>=10.0",
+    "pyobjc-framework-LocalAuthentication>=10.0",
+    "pyobjc-framework-Quartz>=10.0",
+]
+
+[project.scripts]
+facelock = "facelock:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["facelock.py", "island.py"]
