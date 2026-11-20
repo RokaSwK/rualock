@@ -53,12 +53,64 @@ final class LivenessTests: XCTestCase {
         XCTAssertFalse(track.matched)
     }
 
-    func testGapOfMoreThanASecondStartsAnUnverifiedTrack() {
+    func testGapLongerThanTheComeBackWindowNeedsLiveness() {
         var track = FaceTrack()
         blink(&track, matched: true)
-        t += 1.2
+        t += 6.5
         step(&track, 0.30, matched: true)
         XCTAssertFalse(track.verified)
+    }
+
+    func testComingBackQuicklyNearTheSameSpotKeepsConfirmation() {
+        // Looking down: detection drops out for 1.5 s, then finds you again a little lower.
+        var track = FaceTrack()
+        blink(&track, matched: true)
+        t += 1.5
+        _ = track.update([FaceEngine.Face(box: box.offsetBy(dx: 0, dy: -0.08), openness: 0.3, embedding: nil)], at: t)
+        track.setMatched(true)
+        XCTAssertTrue(track.verified)
+        XCTAssertEqual(track.why, "came back")
+    }
+
+    func testComingBackLaterNeedsLiveness() {
+        var track = FaceTrack()
+        blink(&track, matched: true)
+        t += 7
+        step(&track, 0.30, matched: true)
+        XCTAssertFalse(track.verified)
+    }
+
+    func testGlimpsesWhileLookingDownKeepConfirmation() {
+        // Looking down at a phone: the camera only catches the face every few seconds, a bit further each time.
+        var track = FaceTrack()
+        blink(&track, matched: true)
+        for gap in [1.8, 2.7, 3.3, 3.9] {
+            t += gap
+            step(&track, 0.10, matched: true)
+            XCTAssertTrue(track.verified, "after a \(gap) s gap")
+            XCTAssertEqual(track.why, "came back")
+        }
+    }
+
+    func testAFaceElsewhereNeedsLiveness() {
+        var track = FaceTrack()
+        blink(&track, matched: true)
+        t += 1.5
+        _ = track.update([FaceEngine.Face(box: box.offsetBy(dx: 0.5, dy: 0), openness: 0.3, embedding: nil)], at: t)
+        track.setMatched(true)
+        XCTAssertFalse(track.verified)
+    }
+
+    func testLeaningInAndToTheSideKeepsConfirmation() {
+        // Moving quickly breaks the track (the boxes 0.3 s apart barely overlap), but it's still you, nearby.
+        var track = FaceTrack()
+        blink(&track, matched: true)
+        t += 0.6
+        let leaned = CGRect(x: box.minX + 0.17, y: box.minY, width: 0.24, height: 0.34)
+        _ = track.update([FaceEngine.Face(box: leaned, openness: 0.2, embedding: nil)], at: t)
+        track.setMatched(true)
+        XCTAssertTrue(track.verified)
+        XCTAssertEqual(track.why, "came back")
     }
 
     func testLookingDownIsNotABlink() {

@@ -6,23 +6,23 @@ import AppKit
 /// while paused, a grey ring drains until the pause ends. Red: no camera or not set up.
 /// Hover for words, click to pause for 15 minutes (Touch ID) or resume, right-click for more.
 private enum K {
-    static let dot: CGFloat = 5          // dot radius
-    static let ring: CGFloat = 8.5       // countdown ring radius
-    static let pad: CGFloat = 9          // space around the dot on the floating pill
+    static let dot: CGFloat = 3.5        // dot radius
+    static let ring: CGFloat = 5.5       // countdown ring radius
+    static let pad: CGFloat = 6          // space around the dot on the floating pill
     static let inner: CGFloat = 1        // gap between the notch edge and the ring
     static let tail: CGFloat = 5         // space right of the dot when attached to the notch
     static let tuck: CGFloat = 2         // the straight left edge sits this far under the notch
     static let fillet: CGFloat = 12      // fillet into the notch's rounded bottom corner
     static let overlap = tuck + fillet   // window starts this far left of the notch edge
-    static let ear: CGFloat = 6          // concave flare where the shape meets the top bezel
-    static let corner: CGFloat = 9       // bottom-right corner radius
-    static let textGap: CGFloat = 7      // between the ring and the text
-    static let textPad: CGFloat = 10     // right margin after the text
+    static let ear: CGFloat = 4          // concave flare where the shape meets the top bezel
+    static let corner: CGFloat = 6       // bottom-right corner radius
+    static let textGap: CGFloat = 6      // between the ring and the text
+    static let textPad: CGFloat = 8      // right margin after the text
     static let springK: CGFloat = 320    // hover spring stiffness
     static let springDamp: CGFloat = 24  // under 2*sqrt(K), so it overshoots a little, then settles
-    static let pillHeight: CGFloat = 24  // fallback pill on screens without a notch
-    static let heightTrim: CGFloat = 0.4525  // a touch shorter than the notch, to match the camera housing
-    static let font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+    static let pillHeight: CGFloat = 18  // fallback pill on screens without a notch
+    static let notchTrim: CGFloat = 0.4525  // full height sits a touch shorter than the notch, to match the camera housing
+    static let font = NSFont.systemFont(ofSize: 10, weight: .semibold)
 }
 
 private func srgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
@@ -45,7 +45,7 @@ private struct Geometry {
         }
         let f = screen.frame
         if notched != nil, let right = screen.auxiliaryTopRightArea {
-            let h = screen.safeAreaInsets.top - K.heightTrim
+            let h = IslandView.height(notch: screen.safeAreaInsets.top)
             // The area is in global coordinates; tolerate a screen-local rect too.
             let edge = right.minX >= f.minX - 1 && right.minX <= f.maxX + 1 ? right.minX : f.minX + right.minX
             return Geometry(x: edge - K.overlap, y: f.maxY - h, height: h, notch: true)
@@ -102,6 +102,8 @@ extension IslandStatus {
             return StatusDisplay(grey, label, CGFloat(min(1, left / max(1, w.until.timeIntervalSince(w.started)))))
         case .locked:
             return StatusDisplay(grey, "Locked", nil)
+        case .frozen:
+            return StatusDisplay(grey, "Frozen · look at the camera", nil)
         case .noCamera:
             return StatusDisplay(red, "No camera", nil)
         case .cameraDenied:
@@ -169,6 +171,18 @@ final class IslandView: NSView {
 
     /// How far the window starts left of the notch edge (the part tucked under the notch).
     static let notchOverlap = K.overlap
+
+    /// The ring plus a margin above and below (see `IslandSize`), never taller than the notch.
+    static func height(notch: CGFloat, size: IslandSize = Prefs.islandSize) -> CGFloat {
+        let margin: CGFloat
+        switch size {
+        case .short: margin = 2
+        case .medium: margin = 4
+        case .tall: margin = 6.5
+        case .notch: return notch - K.notchTrim
+        }
+        return min(notch - K.notchTrim, 2 * (K.ring + 1 + margin))
+    }
 
     /// One step of the hover spring: a little overshoot, then it settles, like the Dynamic Island.
     static func spring(width: inout CGFloat, velocity: inout CGFloat, target: CGFloat, dt: CGFloat) {
@@ -305,9 +319,9 @@ final class IslandController {
 
     /// Show or hide the light next to the camera. Hidden, it costs nothing: the animation timer stops.
     func setVisible(_ visible: Bool) {
+        geometryAt = 0  // re-read the size now, in case it just changed in Settings
         if visible {
             guard timer == nil else { return }
-            geometryAt = 0
             panel.orderFrontRegardless()
             view.onHoverChange = { [weak self] in self?.run(at: 60) }
             run(at: 15)

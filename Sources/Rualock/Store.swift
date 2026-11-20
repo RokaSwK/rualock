@@ -33,10 +33,23 @@ enum Prefs {
         set { d.set(newValue, forKey: "requireBlink") }
     }
 
+    /// Prank mode: instead of locking, freeze the screen behind an invisible window until your face is
+    /// back, or the Mac is locked and unlocked. See `FreezeOverlay`.
+    static var freezeInstead: Bool {
+        get { d.bool(forKey: "freezeInstead") }
+        set { d.set(newValue, forKey: "freezeInstead") }
+    }
+
     /// The status light that grows out of the camera notch.
     static var showIsland: Bool {
         get { d.object(forKey: "showIsland") as? Bool ?? true }
         set { d.set(newValue, forKey: "showIsland") }
+    }
+
+    /// How tall the status light is beside the notch.
+    static var islandSize: IslandSize {
+        get { d.string(forKey: "islandSize").flatMap(IslandSize.init) ?? .medium }
+        set { d.set(newValue.rawValue, forKey: "islandSize") }
     }
 
     /// The icon in the menu bar.
@@ -48,6 +61,21 @@ enum Prefs {
     static var didOfferLoginItem: Bool {
         get { d.bool(forKey: "didOfferLoginItem") }
         set { d.set(newValue, forKey: "didOfferLoginItem") }
+    }
+}
+
+/// Heights for the status light: the ring with a small, medium or large margin above and below,
+/// or as tall as the notch.
+enum IslandSize: String, CaseIterable {
+    case short, medium, tall, notch
+
+    var title: String {
+        switch self {
+        case .short: return "Short"
+        case .medium: return "Medium"
+        case .tall: return "Tall"
+        case .notch: return "As tall as the notch"
+        }
     }
 }
 

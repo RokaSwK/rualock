@@ -52,7 +52,13 @@ final class FaceEngine {
         if let ne = Self.neuralEngine { request.setComputeDevice(ne, for: .main) }
         if !wantEmbeddings && known.isEmpty { return (0, []) }  // nobody at the last detection: wait for the next
         let refit = !wantEmbeddings
-        if refit { request.inputFaceObservations = known }
+        // Fresh observations with only the boxes: given ones that already carry landmarks, Vision
+        // returns them unchanged instead of measuring this frame (so a quick blink would be missed).
+        if refit {
+            request.inputFaceObservations = known.map {
+                VNFaceObservation(requestRevision: VNDetectFaceLandmarksRequest.currentRevision, boundingBox: $0.boundingBox, roll: $0.roll, yaw: $0.yaw, pitch: $0.pitch)
+            }
+        }
         do {
             try VNImageRequestHandler(cvPixelBuffer: buffer, orientation: .up).perform([request])
         } catch {

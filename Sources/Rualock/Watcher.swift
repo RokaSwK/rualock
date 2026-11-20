@@ -4,7 +4,7 @@ import AVFoundation
 /// The watch-and-lock loop. Runs a 4 Hz tick on the main thread; face checks run on the camera's queue.
 final class Watcher {
     enum State: Equatable {
-        case starting, watching, typing, absent, unverified, paused, locked, noCamera, cameraDenied, notEnrolled, enrolling
+        case starting, watching, typing, absent, unverified, paused, locked, frozen, noCamera, cameraDenied, notEnrolled, enrolling
     }
 
     /// What the latest frames showed.
@@ -23,11 +23,13 @@ final class Watcher {
     /// Seconds since your face was last seen (only meaningful while `absent` or `unverified`).
     private(set) var absentFor: TimeInterval = 0
     /// The current countdown length: the lock delay, plus the blink grace while a matching face
-    /// that hasn't blinked is in view.
+    /// that hasn't blinked is in view or was a moment ago.
     private(set) var lockDelay: TimeInterval = Prefs.lockDelay
     var enrolled: [[Float]] { embeddings }
 
     let camera = Camera()
+    /// Prank mode's stand-in for the lock (`Prefs.freezeInstead`).
+    private let overlay = FreezeOverlay()
     private let engine: FaceEngine
     private var embeddings: [[Float]] = Enrollment.load()
     private var enrollSink: ((Int, [[Float]]) -> Void)?
@@ -37,6 +39,10 @@ final class Watcher {
     /// When your confirmed face was last in view since the last fresh start; nil until then. Typing
     /// only carries on from this, never from a fresh start.
     private var lastConfirmed: Date?
+    /// When a face that matches you but hasn't blinked yet was last in view. Its blink grace holds
+    /// through detection flicker (`graceHold`) instead of ending the moment the face drops out.
+    private var lastUnverified: Date?
+    static let graceHold: TimeInterval = 3
     /// Your confirmed face, or keyboard and mouse input carrying straight on from it.
     private var chain = PresenceChain(at: Date())
     private var presence: Date { chain.presence }
@@ -78,11 +84,13 @@ final class Watcher {
         timer = t
         let mode = Prefs.dryRun ? " (dry run)" : ""
         let blink = Prefs.requireBlink ? ", blink required" : ""
-        note("watching; locking after \(Int(Prefs.lockDelay))s away\(blink)\(mode)")
+        let action = Prefs.freezeInstead ? "freezing" : "locking"
+        note("watching; \(action) after \(Int(Prefs.lockDelay))s away\(blink)\(mode)")
         let version = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
         Diagnostics.shared.event("start", [
             "version": version, "lockDelay": Prefs.lockDelay, "threshold": Double(Prefs.threshold),
-            "requireBlink": Prefs.requireBlink, "dryRun": Prefs.dryRun, "samples": embeddings.count,
+            "requireBlink": Prefs.requireBlink, "freezeInstead": Prefs.freezeInstead, "dryRun": Prefs.dryRun,
+            "samples": embeddings.count,
         ])
         tick()
     }
@@ -136,6 +144,11 @@ final class Watcher {
         }
 
         let locked = System.screenLocked
+        if locked && overlay.active {  // a real lock replaces the freeze; unlocking then lets you back in
+            overlay.hide()
+            note("screen locked: freeze lifted")
+            Diagnostics.shared.event("unfrozen", ["by": "lock"])
+        }
         if locked {
             if !wasLocked { Diagnostics.shared.event("screen_locked", ["byRualock": lockIssued]) }
             wasLocked = true
@@ -167,15 +180,18 @@ final class Watcher {
                 askedForCamera = true
                 AVCaptureDevice.requestAccess(for: .video) { _ in }
             }
+            lockIfFrozen("camera access denied")
             idle(.cameraDenied)
             return
         default:
+            lockIfFrozen("camera access denied")
             idle(.cameraDenied)
             return
         }
 
         if !camera.running {
             guard camera.start() else {
+                lockIfFrozen("no camera")
                 idle(.noCamera)
                 return
             }
@@ -194,6 +210,7 @@ final class Watcher {
                 note("camera stopped sending frames; reopening")
                 Diagnostics.shared.event("camera_stalled")
             }
+            lockIfFrozen("camera stalled")
             state = .noCamera
             absentFor = 0
             resetClock()
@@ -201,19 +218,41 @@ final class Watcher {
             return
         }
 
+        if overlay.active {
+            guard seen == .you else {  // frozen until your confirmed face is back
+                state = .frozen
+                absentFor = 0
+                return
+            }
+            overlay.hide()
+            note("your face is back: freeze lifted")
+            Diagnostics.shared.event("unfrozen", ["by": "face"])
+            Diagnostics.shared.unlocked()
+            resetClock()
+            lastConfirmed = now
+        }
+
         followInput(now)
-        lockDelay = Prefs.lockDelay + (seen == .unverified ? Self.blinkGrace : 0)
+        // The grace can't stretch the countdown past lock delay + blink grace from your last confirmed
+        // sighting: it only stops a flicker from cutting it short.
+        let waitingForBlink = seen == .unverified || lastUnverified.map { now.timeIntervalSince($0) <= Self.graceHold } ?? false
+        lockDelay = Prefs.lockDelay + (waitingForBlink ? Self.blinkGrace : 0)
         absentFor = now.timeIntervalSince(presence)
         if absentFor >= lockDelay {
-            let reason = seen == .unverified ? "no blink" : now.timeIntervalSince(lastSeen) > absentFor + 0.5 ? "input stopped" : "face gone"
+            let reason = waitingForBlink ? "no blink" : now.timeIntervalSince(lastSeen) > absentFor + 0.5 ? "input stopped" : "face gone"
             let info: [String: Any] = [
                 "absentFor": absentFor, "lockDelay": lockDelay, "sinceFace": now.timeIntervalSince(lastSeen),
                 "inputIdle": System.inputIdle, "seen": "\(seen.map { "\($0)" } ?? "none")", "track": track.why,
                 "trackVerified": track.verified, "trackMatched": track.matched, "dryRun": Prefs.dryRun,
+                "freeze": Prefs.freezeInstead,
             ]
             Diagnostics.shared.locked(reason: reason, info)
             if Prefs.dryRun {
                 note("would lock: \(reason) (dry run)")
+            } else if Prefs.freezeInstead {
+                note("\(reason) for \(Int(absentFor))s: freezing the screen")
+                freeze()
+                return
             } else {
                 note("\(reason) for \(Int(absentFor))s: locking")
                 lockIssued = true
@@ -232,6 +271,30 @@ final class Watcher {
         }
     }
 
+    /// Prank mode: cover the screens instead of locking. Whoever is in front of the camera has to prove
+    /// it's you all over again (match and blink); there's no unlock trust and nothing carries over.
+    private func freeze() {
+        overlay.show()
+        Diagnostics.shared.event("frozen")
+        resetClock()
+        absentFor = 0
+        trustUntil = nil
+        seen = nil
+        track = FaceTrack()
+        state = .frozen
+    }
+
+    /// The camera can't lift a freeze if it isn't working: lock for real instead, so you get back in
+    /// with your password rather than being stuck.
+    private func lockIfFrozen(_ why: String) {
+        guard overlay.active else { return }
+        overlay.hide()
+        note("\(why) while frozen: locking")
+        Diagnostics.shared.event("unfrozen", ["by": why])
+        lockIssued = true
+        System.lockScreen()
+    }
+
     /// Let keyboard and mouse input carry on from your confirmed face (see `PresenceChain`).
     private func followInput(_ now: Date) {
         let idle = System.inputIdle
@@ -248,6 +311,7 @@ final class Watcher {
     private func resetClock() {
         lastSeen = Date()
         lastConfirmed = nil
+        lastUnverified = nil
         chain = PresenceChain(at: lastSeen)
     }
 
@@ -333,9 +397,11 @@ final class Watcher {
             seen = .you
             lastSeen = now
             lastConfirmed = now
+            lastUnverified = nil
             setBlinkMode(false)
         } else {
             seen = .unverified
+            lastUnverified = now
             setBlinkMode(true)
         }
     }
@@ -350,6 +416,8 @@ final class Watcher {
         if let score { r["score"] = Double(score) }
         if let face {
             r["size"] = Double(face.box.width)
+            r["x"] = Double(face.box.midX)
+            r["y"] = Double(face.box.midY)
             if let o = face.openness { r["eyes"] = o }
             if let m = face.mouthOpen { r["mouthOpen"] = m }
         }

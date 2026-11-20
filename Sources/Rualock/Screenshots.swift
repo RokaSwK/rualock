@@ -18,7 +18,7 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
     private let bar: CGFloat = 32
     private let notchWidth: CGFloat = 190
     private lazy var view: IslandView = {
-        let v = IslandView(watcher: status, height: bar - 0.4525)
+        let v = IslandView(watcher: status, height: IslandView.height(notch: bar, size: .medium))
         v.notch = true
         return v
     }()
@@ -28,7 +28,7 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
         dir = directory
         // Render with default settings whatever yours are (the argument domain wins, and isn't saved).
         UserDefaults.standard.setVolatileDomain([
-            "lockDelay": 8.0, "requireBlink": true, "showIsland": true, "showMenuBarIcon": true, "recordDiagnostics": true,
+            "lockDelay": 8.0, "requireBlink": true, "showIsland": true, "showMenuBarIcon": true, "recordDiagnostics": true, "islandSize": "medium",
         ], forName: UserDefaults.argumentDomain)
     }
 
@@ -150,7 +150,7 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
 
         // The island, then the notch on top of it, as the hardware hides what's under the notch.
         let notchRight = size.width / 2 + notchWidth / 2
-        view.frame = NSRect(x: 0, y: 0, width: width, height: bar - 0.4525)
+        view.frame = NSRect(x: 0, y: 0, width: width, height: IslandView.height(notch: bar, size: .medium))
         cg.saveGState()
         cg.translateBy(x: notchRight - IslandView.notchOverlap, y: size.height - view.frame.height)
         view.draw(view.bounds)

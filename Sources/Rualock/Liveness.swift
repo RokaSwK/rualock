@@ -9,7 +9,11 @@ import QuartzCore
 /// - blinking (a photo never blinks),
 /// - talking: the mouth opening well past its recent normal for a few frames in a row (a photo,
 ///   however it's tilted or how its landmarks jitter, doesn't), or
-/// - being the face in front of the camera right after you unlocked the Mac.
+/// - being the face in front of the camera right after you unlocked the Mac, or
+/// - coming back within 6 s, within two face widths of where it was, after a confirmed face
+///   dropped out for a moment
+///   (looking down makes detection flicker; a photo would have to be slid into your place, while
+///   you're still right there, within those 6 s).
 struct FaceTrack {
     static let maxGap: CFTimeInterval = 1.0     // missing longer than this: a new track
     static let minOverlap: CGFloat = 0.3        // overlap with the last position needed to be the same face
@@ -19,6 +23,8 @@ struct FaceTrack {
     static let talkOpen = 0.3                   // mouth opening (height / width) this far above its normal...
     static let talkFrames = 3                   // ...for this many frames in a row: talking (jitter is ~0.03-0.1)
     static let missTolerance: CFTimeInterval = 1.5  // recognition misses ridden out on a face that stays put
+    static let reacquireWindow: CFTimeInterval = 6  // a confirmed face that drops out and comes back this soon...
+    static let reacquireDistance: CGFloat = 2.0     // ...this close (in face widths) keeps its confirmation
     static let stillOverlap: CGFloat = 0.6      // "stays put": overlap with where it last matched
 
     /// Receives each decision (new track, verified, ...), for diagnostics. Nil in tests.
@@ -39,6 +45,15 @@ struct FaceTrack {
     private var closedSince: CFTimeInterval?
     private var misses = 0
     private var lastMatch: (t: CFTimeInterval, box: CGRect)?
+    /// Where and when a confirmed face was last seen, carried over to the next track for `reacquireWindow`.
+    private var lostConfirmed: (t: CFTimeInterval, box: CGRect)?
+
+    /// A fresh track that remembers this one if it was confirmed.
+    private func successor() -> FaceTrack {
+        var next = FaceTrack()
+        if verified, matched, let box { next.lostConfirmed = (lastSeen, box) } else { next.lostConfirmed = lostConfirmed }
+        return next
+    }
 
     /// Picks which of this frame's faces continues the track (nil if none is visible) and
     /// starts a new track when the face is a different one or came back after a gap.
@@ -63,7 +78,7 @@ struct FaceTrack {
             mouthOpenRun = 0
             if box != nil, t - lastSeen > Self.maxGap {
                 Self.log?("track_lost", ["verified": verified, "matched": matched])
-                self = FaceTrack()
+                self = successor()
                 why = "face out of view"
             }
             return nil
@@ -72,7 +87,7 @@ struct FaceTrack {
         var info: [String: Any] = ["reason": reason, "wasVerified": verified]
         if let box { info["gap"] = t - lastSeen; info["overlap"] = Double(iou(face.box, box)) }
         Self.log?("track_new", info)
-        self = FaceTrack()
+        self = successor()
         why = reason
         follow(face, at: t)
         return face
@@ -95,6 +110,13 @@ struct FaceTrack {
             if !matched {
                 verified = false
                 why = "now matches you"
+                if let lost = lostConfirmed, let box, t - lost.t <= Self.reacquireWindow,
+                   hypot(box.midX - lost.box.midX, box.midY - lost.box.midY) <= Self.reacquireDistance * max(box.width, lost.box.width) {
+                    verified = true
+                    why = "came back"
+                    Self.log?("verified", ["by": "came back", "gap": t - lost.t])
+                }
+                lostConfirmed = nil
             }
             matched = true
             misses = 0
