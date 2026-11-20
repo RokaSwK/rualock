@@ -17,9 +17,15 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
     private let size = CGSize(width: 760, height: 80)
     private let bar: CGFloat = 32
     private let notchWidth: CGFloat = 190
+    /// The island's window height in the mock menu bar: the light plus its flare into the notch.
+    private var islandHeight: CGFloat {
+        let h = IslandView.height(notch: bar)
+        return h + IslandView.join(notch: bar, height: h)
+    }
     private lazy var view: IslandView = {
-        let v = IslandView(watcher: status, height: IslandView.height(notch: bar, preferred: 21))
+        let v = IslandView(watcher: status, height: islandHeight)
         v.notch = true
+        v.join = IslandView.join(notch: bar, height: IslandView.height(notch: bar))
         return v
     }()
     private var keep: [NSWindowController] = []
@@ -28,7 +34,7 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
         dir = directory
         // Render with default settings whatever yours are (the argument domain wins, and isn't saved).
         UserDefaults.standard.setVolatileDomain([
-            "lockDelay": 8.0, "requireBlink": true, "showIsland": true, "showMenuBarIcon": true, "recordDiagnostics": true, "islandHeight": 21.0, "freezeInstead": false,
+            "lockDelay": 8.0, "requireBlink": true, "showIsland": true, "showMenuBarIcon": true, "recordDiagnostics": true, "islandStyle": "standard", "freezeInstead": false,
         ], forName: UserDefaults.argumentDomain)
     }
 
@@ -150,7 +156,7 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
 
         // The island, then the notch on top of it, as the hardware hides what's under the notch.
         let notchRight = size.width / 2 + notchWidth / 2
-        view.frame = NSRect(x: 0, y: 0, width: width, height: IslandView.height(notch: bar, preferred: 21))
+        view.frame = NSRect(x: 0, y: 0, width: width, height: islandHeight)
         cg.saveGState()
         cg.translateBy(x: notchRight - IslandView.notchOverlap, y: size.height - view.frame.height)
         view.draw(view.bounds)

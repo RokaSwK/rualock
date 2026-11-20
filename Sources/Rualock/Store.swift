@@ -46,20 +46,72 @@ enum Prefs {
         set { d.set(newValue, forKey: "showIsland") }
     }
 
-    /// How tall the status light is beside the notch, in points. Anything from just around the ring
-    /// up to the notch's full height; taller values are capped at the notch.
-    static var islandHeight: Double {
+    /// The status light's look: a preset, or `.custom` with the values below. Changing any value makes
+    /// it custom, starting from the preset you were on.
+    static var islandStyle: IslandStyle {
         get {
-            let v = d.double(forKey: "islandHeight")
-            if v > 0 { return v }
-            switch d.string(forKey: "islandSize") {  // the earlier four-step setting
-            case "short"?: return 17
-            case "tall"?: return 26
-            case "notch"?: return 100
-            default: return 21
-            }
+            if let s = d.string(forKey: "islandStyle").flatMap(IslandStyle.init) { return s }
+            // Sizes set before there were presets: keep them.
+            return ["islandHeight", "islandDot", "islandText"].contains { d.object(forKey: $0) != nil } ? .custom : .standard
         }
-        set { d.set(newValue, forKey: "islandHeight") }
+        set {
+            if newValue == .custom, islandStyle != .custom, let look = islandStyle.look {
+                for (key, value) in look.values { d.set(value, forKey: key) }  // start from what you saw
+            }
+            d.set(newValue.rawValue, forKey: "islandStyle")
+        }
+    }
+
+    private static func look(_ key: String, _ value: KeyPath<IslandLook, Double>, in range: ClosedRange<Double>? = nil) -> Double {
+        if let look = islandStyle.look { return look[keyPath: value] }
+        let v = d.object(forKey: key) as? Double ?? IslandLook.standard[keyPath: value]
+        return range.map { v.clamped(to: $0) } ?? v
+    }
+
+    private static func setLook(_ key: String, _ value: Double) {
+        islandStyle = .custom
+        d.set(value, forKey: key)
+    }
+
+    /// How tall the status light is beside the notch, in points; taller values are capped at the notch.
+    static var islandHeight: Double {
+        get { look("islandHeight", \.height) }
+        set { setLook("islandHeight", newValue) }
+    }
+
+    /// Radius of the status light's dot, in points; the countdown ring around it scales with it.
+    static let islandDotSizes: ClosedRange<Double> = 2 ... 8
+    static var islandDot: Double {
+        get { look("islandDot", \.dot, in: islandDotSizes) }
+        set { setLook("islandDot", newValue) }
+    }
+
+    /// Size of the status light's words ("Watching", "Locking in 3s"), in points.
+    static let islandTextSizes: ClosedRange<Double> = 8 ... 16
+    static var islandText: Double {
+        get { look("islandText", \.text, in: islandTextSizes) }
+        set { setLook("islandText", newValue) }
+    }
+
+    /// Radius of the light's outer bottom corner, in points.
+    static let islandCornerSizes: ClosedRange<Double> = 0 ... 16
+    static var islandCorner: Double {
+        get { look("islandCorner", \.corner, in: islandCornerSizes) }
+        set { setLook("islandCorner", newValue) }
+    }
+
+    /// The concave curve where the light's top meets the screen's top edge, in points.
+    static let islandFlareSizes: ClosedRange<Double> = 0 ... 10
+    static var islandEar: Double {
+        get { look("islandEar", \.ear, in: islandFlareSizes) }
+        set { setLook("islandEar", newValue) }
+    }
+
+    /// The concave curve where the light's bottom meets the notch's side, in points. Only shows while
+    /// the light is shorter than the notch.
+    static var islandJoin: Double {
+        get { look("islandJoin", \.join, in: islandFlareSizes) }
+        set { setLook("islandJoin", newValue) }
     }
 
     /// The icon in the menu bar.
@@ -72,6 +124,46 @@ enum Prefs {
         get { d.bool(forKey: "didOfferLoginItem") }
         set { d.set(newValue, forKey: "didOfferLoginItem") }
     }
+}
+
+/// Presets for the status light. Heights over the notch's are capped to it, so `.notch` is always full height.
+enum IslandStyle: String, CaseIterable {
+    case compact, standard, large, notch, custom
+
+    var title: String {
+        switch self {
+        case .compact: return "Compact"
+        case .standard: return "Standard"
+        case .large: return "Large"
+        case .notch: return "Notch height"
+        case .custom: return "Custom"
+        }
+    }
+
+    var look: IslandLook? {
+        switch self {
+        case .compact: return IslandLook(height: 17, dot: 3, text: 9, corner: 6, ear: 3, join: 3)
+        case .standard: return .standard
+        case .large: return IslandLook(height: 26, dot: 4.5, text: 12, corner: 10, ear: 5, join: 5)
+        case .notch: return IslandLook(height: 100, dot: 5, text: 11.5, corner: 9, ear: 6, join: 0)
+        case .custom: return nil
+        }
+    }
+}
+
+/// Sizes of the status light, in points. See `Prefs.islandHeight` and the rest.
+struct IslandLook {
+    var height, dot, text, corner, ear, join: Double
+
+    static let standard = IslandLook(height: 21, dot: 3.5, text: 10, corner: 8, ear: 4, join: 4)
+
+    var values: [(String, Double)] {
+        [("islandHeight", height), ("islandDot", dot), ("islandText", text), ("islandCorner", corner), ("islandEar", ear), ("islandJoin", join)]
+    }
+}
+
+extension Comparable {
+    func clamped(to range: ClosedRange<Self>) -> Self { min(max(self, range.lowerBound), range.upperBound) }
 }
 
 enum Pause {

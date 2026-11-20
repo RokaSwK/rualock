@@ -117,28 +117,30 @@ enum AppMenu {
     static func build(state: Watcher.State, paused: Bool, enrolled: Bool, target: AnyObject) -> NSMenu {
         let menu = NSMenu()
         let action = NSSelectorFromString("menuCommand:")
-        func add(_ title: String, _ command: Command, _ key: String = "", enabled: Bool = true) {
+        // Each item has a symbol, as in current macOS menus.
+        func add(_ title: String, _ command: Command, _ symbol: String, _ key: String = "", enabled: Bool = true) {
             let item = NSMenuItem(title: title, action: enabled ? action : nil, keyEquivalent: key)
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
             item.target = target
             item.tag = command.rawValue
             menu.addItem(item)
         }
         switch state {
-        case .notEnrolled: add("Set Up Your Face…", .enroll)
-        case .cameraDenied: add("Allow Camera Access…", .camera)
+        case .notEnrolled: add("Set Up Your Face…", .enroll, "faceid")
+        case .cameraDenied: add("Allow Camera Access…", .camera, "video")
         default: break
         }
         if paused {
-            add("Resume", .resume)
+            add("Resume", .resume, "play")
         } else {
-            add("Pause for 15 Minutes", .pause15, enabled: enrolled)
-            add("Pause for 1 Hour", .pause60, enabled: enrolled)
+            add("Pause for 15 Minutes", .pause15, "pause", enabled: enrolled)
+            add("Pause for 1 Hour", .pause60, "clock", enabled: enrolled)
         }
-        add("Lock Now", .lock)
+        add("Lock Now", .lock, "lock")
         menu.addItem(.separator())
-        add("Settings…", .settings, ",")
+        add("Settings…", .settings, "gearshape", ",")
         menu.addItem(.separator())
-        add("Quit Rualock", .quit, "q")
+        add("Quit Rualock", .quit, "power", "q")
         return menu
     }
 }
