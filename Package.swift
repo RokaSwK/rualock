@@ -6,5 +6,6 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(name: "Rualock", path: "Sources/Rualock"),
+        .testTarget(name: "RualockTests", dependencies: ["Rualock"], path: "Tests/RualockTests"),
     ]
 )

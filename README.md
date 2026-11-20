@@ -51,7 +51,7 @@ Rualock watches your webcam for *your* face. When your face has been gone for a 
 2. Apple's **Vision** framework finds faces and their landmarks: eyes, nose and mouth corners.
 3. Each face is aligned to a standard 112×112 pose, then **SFace** turns it into 128 numbers (an *embedding*). SFace is a small face-recognition network from the [OpenCV model zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface), converted to Core ML.
 4. Each embedding is compared with the 30 samples taken during setup. A cosine similarity of 0.363 or more counts as you.
-5. **Liveness.** Rualock follows the face from frame to frame. Right after you unlock, the face in front of the camera is trusted, because you've just typed your password or used Touch ID. A face that turns up after a gap (more than a second out of view, or a jump to another spot) has to blink first. For that, Rualock watches eye openness on every frame (10 per second): a blink is a sharp dip that recovers within 0.6 seconds. Slowly narrowed eyes, such as when you look down at the keyboard, don't count. While waiting, the light shows "Blink to confirm" and the countdown gets 10 extra seconds. Once confirmed, the face stays confirmed until it disappears again, so slipping a phone in after you get up doesn't work.
+5. **Liveness.** Rualock follows the face from frame to frame. Right after you unlock, the face in front of the camera is trusted, because you've just typed your password or used Touch ID. A face that turns up after a gap (more than a second out of view, or a jump to another spot) has to blink first. For that, Rualock watches eye openness on every frame (10 per second): a blink is a sharp dip that recovers within 0.8 seconds. Slowly narrowed eyes, such as when you look down at the keyboard, don't count. While waiting, the light shows "Blink to confirm" and the countdown gets 10 extra seconds. Once confirmed, the face stays confirmed until it disappears again, so slipping a phone in after you get up doesn't work.
 6. If you haven't been seen for the lock delay, Rualock locks the screen.
 
 On first launch, Rualock asks for camera access and takes about 5 seconds to learn your face. It also adds itself to your login items; you can turn that off in Settings.
@@ -86,6 +86,10 @@ xcrun notarytool store-credentials rualock --apple-id you@example.com --team-id 
 scripts/build.sh && scripts/notarize.sh     # → build/Rualock-1.0.0.dmg, notarized and stapled
 ```
 
+### Tests
+
+`swift test` runs the liveness tests: a still photo never passes, someone else's blink doesn't carry over to a photo of you, looking down isn't a blink, and so on.
+
 ### Developer tools
 
 | Command | What it does |
@@ -93,6 +97,7 @@ scripts/build.sh && scripts/notarize.sh     # → build/Rualock-1.0.0.dmg, notar
 | `Rualock.app/Contents/MacOS/Rualock -dryRun YES` | Run without locking; logs "would lock" instead. |
 | `Rualock.app/Contents/MacOS/Rualock --embed photo.png` | Print the embedding of the largest face in an image. |
 | `Rualock.app/Contents/MacOS/Rualock --screenshots dir` | Render the images in this README. |
+| `defaults write com.rualock.mac debugLiveness -bool true` | Log liveness decisions (new face, blink, identity change) to the log file. |
 
 Logs go to `~/Library/Logs/Rualock.log` and to the unified log, under subsystem `com.rualock.mac`.
 

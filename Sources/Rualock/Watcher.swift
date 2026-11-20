@@ -169,6 +169,9 @@ final class Watcher {
         }
 
         lockDelay = Prefs.lockDelay + (seen == .unverified ? Self.blinkGrace : 0)
+        if Prefs.debugLiveness, seen == .unverified, Int(now.timeIntervalSince(lastSeen) * 4) % 8 == 0 {
+            note(String(format: "liveness: waiting for a blink, %.0f s; blink mode %@", now.timeIntervalSince(lastSeen), blinkModeOn ? "on" : "off"))
+        }
         absentFor = now.timeIntervalSince(lastSeen)
         if absentFor >= lockDelay {
             if Prefs.dryRun {
@@ -198,6 +201,7 @@ final class Watcher {
         lastSeen = Date()  // grace period once unlocked or resumed
         seen = nil
         track = FaceTrack()
+        setBlinkMode(false)
     }
 
     private func setFPS(_ value: Double) {
@@ -233,14 +237,32 @@ final class Watcher {
             sink(count, faces.compactMap(\.embedding))
             return
         }
-        guard let face = track.update(faces, at: t) else {
+        guard let face = track.update(faces, at: t, detected: recognised) else {
             // Nobody in view. A face missing for a frame or two (often during a blink) keeps its state.
-            if t - track.lastSeen > FaceTrack.maxGap || seen == nil { seen = .nobody }
+            if t - track.lastSeen > FaceTrack.maxGap || seen == nil {
+                seen = .nobody
+                setBlinkMode(false)
+            }
             return
         }
-        if recognised, let e = face.embedding {
+        if recognised {
             let threshold = Prefs.threshold
-            track.matched = embeddings.contains { FaceEngine.similarity($0, e) >= threshold }
+            let isYou = { (f: FaceEngine.Face) -> Bool in
+                guard let e = f.embedding else { return false }
+                return self.embeddings.contains { FaceEngine.similarity($0, e) >= threshold }
+            }
+            if Prefs.debugLiveness, let e = face.embedding {
+                let best = embeddings.map { FaceEngine.similarity($0, e) }.max() ?? 0
+                if best < threshold + 0.1 { note(String(format: "liveness: low match %.2f", best)) }
+            } else if Prefs.debugLiveness {
+                note("liveness: no embedding for the tracked face")
+            }
+            if !isYou(face), let you = faces.first(where: isYou) {
+                track.restart(with: you, at: t)  // you're in view, but the tracked face is someone else's
+                track.setMatched(true)
+            } else {
+                track.setMatched(isYou(face))
+            }
         }
         guard track.matched else {
             seen = .nobody
@@ -251,6 +273,9 @@ final class Watcher {
             track.trust()
             trustUntil = nil
         }
+        if Prefs.debugLiveness, seen != (track.verified ? .you : .unverified) {
+            note("liveness: \(track.verified ? "verified" : "needs a blink") (\(track.why))")
+        }
         if !Prefs.requireBlink || track.verified {
             seen = .you
             lastSeen = now
@@ -259,6 +284,12 @@ final class Watcher {
             seen = .unverified
             setBlinkMode(true)
         }
+    }
+
+    private var blinkModeOn: Bool {
+        fpsLock.lock()
+        defer { fpsLock.unlock() }
+        return blinkMode
     }
 
     private func setBlinkMode(_ on: Bool) {

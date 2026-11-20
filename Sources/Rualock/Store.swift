@@ -21,6 +21,9 @@ enum Prefs {
     /// Log "would lock" instead of locking. Set with `-dryRun YES` on the command line.
     static var dryRun: Bool { d.bool(forKey: "dryRun") }
 
+    /// Log liveness decisions (new face, blink, identity change). Set with `-debugLiveness YES`.
+    static var debugLiveness: Bool { d.bool(forKey: "debugLiveness") }
+
     /// Count a face as yours only once it has blinked, so a photo can't stand in for you.
     static var requireBlink: Bool {
         get { d.object(forKey: "requireBlink") as? Bool ?? true }
