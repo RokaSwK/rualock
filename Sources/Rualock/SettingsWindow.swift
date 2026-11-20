@@ -52,6 +52,7 @@ final class SettingsModel: ObservableObject {
     @Published var ear = Prefs.islandEar
     @Published var join = Prefs.islandJoin
     @Published var advanced = false
+    @Published var canBlockAll = InputBlocker.allowed
 
     let onReenroll: () -> Void
     let onDisplayChange: () -> Void
@@ -77,6 +78,7 @@ final class SettingsModel: ObservableObject {
         corner = Prefs.islandCorner
         ear = Prefs.islandEar
         join = Prefs.islandJoin
+        canBlockAll = InputBlocker.allowed
     }
 
     /// The light can't be shorter than its ring, so a bigger dot raises the minimum height.
@@ -201,9 +203,23 @@ struct SettingsView: View {
                 Picker("After", selection: bind({ model.lockDelay }, model.setLockDelay)) {
                     ForEach(Prefs.lockDelays, id: \.self) { Text("\(Int($0)) seconds").tag($0) }
                 }
+                if model.freeze {
+                    LabeledContent {
+                        if model.canBlockAll {
+                            Label("On", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        } else {
+                            Button("Allow Accessibility…", action: InputBlocker.requestAccess)
+                        }
+                    } label: {
+                        Text("Block all input")
+                        Text(model.canBlockAll
+                             ? "Keys, clicks, the cursor, gestures and system shortcuts all stop."
+                             : "Without Accessibility access, only clicks and typing stop; gestures and Spotlight still work.")
+                    }
+                }
             } footer: {
                 if model.freeze {
-                    Text("The screen looks unlocked, but clicks and keys do nothing until Rualock sees your face and a blink. Locking and unlocking the Mac (⌃⌘Q) also lifts it. A prank, not a lock.")
+                    Text("The screen looks unlocked, but nothing responds until Rualock sees your face and a blink. To get in without it, press ⌃⌘Q (or the power button) to lock, then unlock as usual. A prank, not a lock.")
                         .settingsFooter()
                 }
             }
@@ -275,6 +291,10 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 520, minHeight: 420)
+        // Accessibility is granted in System Settings: notice when it changes.
+        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in
+            if model.canBlockAll != InputBlocker.allowed { model.canBlockAll = InputBlocker.allowed }
+        }
     }
 
     private func points(_ v: Double) -> String { String(format: "%g pt", v) }
