@@ -6,23 +6,30 @@ import AppKit
 /// while paused, a grey ring drains until the pause ends. Red: no camera or not set up.
 /// Hover for words, click to pause for 15 minutes (Touch ID) or resume, right-click for more.
 private enum K {
-    static let dot: CGFloat = 5          // dot radius
-    static let ring: CGFloat = 8.5       // countdown ring radius
-    static let pad: CGFloat = 9          // space around the dot on the floating pill
+    static var dot: CGFloat { CGFloat(Prefs.islandDot) }  // dot radius (Settings › Dot size)
+    static var ring: CGFloat { dot * 11 / 7 }  // countdown ring radius: 5.5 around the default 3.5 dot
+    static let pad: CGFloat = 6          // space around the dot on the floating pill
     static let inner: CGFloat = 1        // gap between the notch edge and the ring
     static let tail: CGFloat = 5         // space right of the dot when attached to the notch
     static let tuck: CGFloat = 2         // the straight left edge sits this far under the notch
     static let fillet: CGFloat = 12      // fillet into the notch's rounded bottom corner
     static let overlap = tuck + fillet   // window starts this far left of the notch edge
-    static let ear: CGFloat = 6          // concave flare where the shape meets the top bezel
-    static let corner: CGFloat = 9       // bottom-right corner radius
-    static let textGap: CGFloat = 7      // between the ring and the text
-    static let textPad: CGFloat = 10     // right margin after the text
+    static var ear: CGFloat { CGFloat(Prefs.islandEar) }        // concave flare where the shape meets the top bezel
+    static var corner: CGFloat { CGFloat(Prefs.islandCorner) }  // bottom-right corner radius
+    static var join: CGFloat { CGFloat(Prefs.islandJoin) }      // concave flare into the notch's side, below
+    static let textGap: CGFloat = 6      // between the ring and the text
+    static let textPad: CGFloat = 8      // right margin after the text
     static let springK: CGFloat = 320    // hover spring stiffness
     static let springDamp: CGFloat = 24  // under 2*sqrt(K), so it overshoots a little, then settles
-    static let pillHeight: CGFloat = 24  // fallback pill on screens without a notch
-    static let heightTrim: CGFloat = 0.4525  // a touch shorter than the notch, to match the camera housing
-    static let font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+    static var pillHeight: CGFloat { max(18, 2 * ring + 7) }  // fallback pill on screens without a notch
+    static let notchTrim: CGFloat = 0.4525  // full height sits a touch shorter than the notch, to match the camera housing
+    /// The words' font (Settings › Text size), made once per size: it's used on every frame.
+    static var font: NSFont {
+        let size = CGFloat(Prefs.islandText)
+        if cachedFont.pointSize != size { cachedFont = .systemFont(ofSize: size, weight: .semibold) }
+        return cachedFont
+    }
+    private static var cachedFont = NSFont.systemFont(ofSize: 10, weight: .semibold)
 }
 
 private func srgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
@@ -35,7 +42,8 @@ private let red = srgb(1.00, 0.27, 0.23)
 private let grey = srgb(0.56, 0.56, 0.60)
 
 private struct Geometry {
-    var x: CGFloat, y: CGFloat, height: CGFloat, notch: Bool
+    /// `height` is the whole window: the light, plus `join` below it for the flare into the notch's side.
+    var x: CGFloat, y: CGFloat, height: CGFloat, notch: Bool, join: CGFloat = 0
 
     static func current() -> Geometry {
         let screens = NSScreen.screens
@@ -45,10 +53,11 @@ private struct Geometry {
         }
         let f = screen.frame
         if notched != nil, let right = screen.auxiliaryTopRightArea {
-            let h = screen.safeAreaInsets.top - K.heightTrim
+            let top = screen.safeAreaInsets.top
+            let h = IslandView.height(notch: top), j = IslandView.join(notch: top, height: h)
             // The area is in global coordinates; tolerate a screen-local rect too.
             let edge = right.minX >= f.minX - 1 && right.minX <= f.maxX + 1 ? right.minX : f.minX + right.minX
-            return Geometry(x: edge - K.overlap, y: f.maxY - h, height: h, notch: true)
+            return Geometry(x: edge - K.overlap, y: f.maxY - h - j, height: h + j, notch: true, join: j)
         }
         let bar = NSStatusBar.system.thickness
         return Geometry(x: f.midX + 60, y: f.maxY - bar + (bar - K.pillHeight) / 2, height: K.pillHeight, notch: false)
@@ -102,6 +111,8 @@ extension IslandStatus {
             return StatusDisplay(grey, label, CGFloat(min(1, left / max(1, w.until.timeIntervalSince(w.started)))))
         case .locked:
             return StatusDisplay(grey, "Locked", nil)
+        case .frozen:
+            return StatusDisplay(red, "Frozen · look at the camera", nil)
         case .noCamera:
             return StatusDisplay(red, "No camera", nil)
         case .cameraDenied:
@@ -134,6 +145,10 @@ final class IslandView: NSView {
     var hover = false { didSet { if hover != oldValue { onHoverChange?() } } }
     var onHoverChange: (() -> Void)?
     var notch = true
+    /// Points at the bottom of the view below the light itself, for the flare into the notch's side.
+    var join: CGFloat = 0
+    /// The light itself: the view without the join flare below it.
+    private var body: NSRect { NSRect(x: 0, y: join, width: bounds.width, height: bounds.height - join) }
 
     init(watcher: IslandStatus, height: CGFloat) {
         self.watcher = watcher
@@ -157,18 +172,42 @@ final class IslandView: NSView {
 
     var expandedWidth: CGFloat {
         let label = status().label
-        if label != measured.label {  // measuring text is the costly part of a frame; labels rarely change
-            measured = (label, (label as NSString).size(withAttributes: [.font: K.font]).width)
+        let font = K.font
+        if label != measured.label || font.pointSize != measured.size {  // measuring text is the costly part of a frame
+            measured = (label, font.pointSize, (label as NSString).size(withAttributes: [.font: font]).width)
         }
         return textX + measured.width + K.textPad + (notch ? K.ear : 0)
     }
 
-    private var measured: (label: String, width: CGFloat) = ("", 0)
+    private var measured: (label: String, size: CGFloat, width: CGFloat) = ("", 0, 0)
 
     var targetWidth: CGFloat { hover ? expandedWidth : compactWidth }
 
     /// How far the window starts left of the notch edge (the part tucked under the notch).
     static let notchOverlap = K.overlap
+
+    /// The shortest the light can be: the countdown ring and a point above and below it.
+    static var minHeight: CGFloat { 2 * (K.ring + K.inner) }
+
+    /// The tallest it can be beside a notch this tall: a touch shorter, to match the camera housing.
+    static func maxHeight(notch: CGFloat) -> CGFloat { notch - K.notchTrim }
+
+    /// The tallest on this Mac's notch (or a typical notch if no screen has one), for the Settings slider.
+    static var maxHeightHere: CGFloat {
+        maxHeight(notch: NSScreen.screens.map(\.safeAreaInsets.top).max().flatMap { $0 > 0 ? $0 : nil } ?? 32)
+    }
+
+    /// The light's height beside a notch, from `Prefs.islandHeight`, between `minHeight` and the notch.
+    static func height(notch: CGFloat, preferred: CGFloat = CGFloat(Prefs.islandHeight)) -> CGFloat {
+        min(maxHeight(notch: notch), max(minHeight, preferred))
+    }
+
+    /// How far the flare into the notch's side reaches below the light: none at the notch's full
+    /// height (there the shape fills the notch's rounded corner instead), and never past the notch.
+    static func join(notch: CGFloat, height: CGFloat) -> CGFloat {
+        let room = maxHeight(notch: notch) - height
+        return room < 0.5 ? 0 : min(K.join, room)
+    }
 
     /// One step of the hover spring: a little overshoot, then it settles, like the Dynamic Island.
     static func spring(width: inout CGFloat, velocity: inout CGFloat, target: CGFloat, dt: CGFloat) {
@@ -191,20 +230,29 @@ final class IslandView: NSView {
     }
 
     private func shape() -> NSBezierPath {
-        let w = bounds.width, h = bounds.height
-        guard notch else { return NSBezierPath(roundedRect: bounds, xRadius: h / 2, yRadius: h / 2) }
-        // Square on the notch side, flared into the top bezel, rounded at the bottom right,
-        // so it reads as the notch growing sideways. Bottom-left, a fillet fills the wedge the
-        // notch's rounded corner leaves; the rest under the notch is hidden by the hardware.
+        let w = bounds.width, top = bounds.height, b = body.minY, h = body.height
+        guard notch else { return NSBezierPath(roundedRect: body, xRadius: h / 2, yRadius: h / 2) }
+        // Square on the notch side, flared into the top bezel, rounded at the bottom right, so it
+        // reads as the notch growing sideways. The radii are capped so they always fit.
+        let e = min(K.ear, h / 2), c = min(K.corner, h - e, max(0, w - K.overlap - e) / 2)
+        let edge = K.overlap  // the notch's right edge; everything left of it is hidden by the hardware
         let p = NSBezierPath()
-        let e = K.ear, c = K.corner
-        p.move(to: NSPoint(x: K.fillet, y: h))
-        p.line(to: NSPoint(x: w, y: h))
-        p.curve(to: NSPoint(x: w - e, y: h - e), controlPoint1: NSPoint(x: w - e * 0.45, y: h), controlPoint2: NSPoint(x: w - e, y: h - e * 0.45))
-        p.line(to: NSPoint(x: w - e, y: c))
-        p.curve(to: NSPoint(x: w - e - c, y: 0), controlPoint1: NSPoint(x: w - e, y: c * 0.45), controlPoint2: NSPoint(x: w - e - c * 0.45, y: 0))
-        p.line(to: NSPoint(x: 0, y: 0))
-        p.appendArc(withCenter: NSPoint(x: 0, y: K.fillet), radius: K.fillet, startAngle: 270, endAngle: 360, clockwise: false)
+        p.move(to: NSPoint(x: edge - K.tuck, y: top))
+        p.line(to: NSPoint(x: w, y: top))
+        p.curve(to: NSPoint(x: w - e, y: top - e), controlPoint1: NSPoint(x: w - e * 0.45, y: top), controlPoint2: NSPoint(x: w - e, y: top - e * 0.45))
+        p.line(to: NSPoint(x: w - e, y: b + c))
+        p.curve(to: NSPoint(x: w - e - c, y: b), controlPoint1: NSPoint(x: w - e, y: b + c * 0.45), controlPoint2: NSPoint(x: w - e - c * 0.45, y: b))
+        if b > 0 {
+            // Shorter than the notch: flare down into the notch's side, like the flare into the bezel.
+            let jx = min(b, max(0, w - e - c - edge))  // narrower if the corner leaves less room
+            p.line(to: NSPoint(x: edge + jx, y: b))
+            p.curve(to: NSPoint(x: edge, y: 0), controlPoint1: NSPoint(x: edge + jx * 0.45, y: b), controlPoint2: NSPoint(x: edge, y: b * 0.45))
+            p.line(to: NSPoint(x: edge - K.tuck, y: 0))
+        } else {
+            // As tall as the notch: a fillet fills the wedge the notch's rounded corner leaves.
+            p.line(to: NSPoint(x: 0, y: 0))
+            p.appendArc(withCenter: NSPoint(x: 0, y: K.fillet), radius: K.fillet, startAngle: 270, endAngle: 360, clockwise: false)
+        }
         p.close()
         return p
     }
@@ -217,7 +265,7 @@ final class IslandView: NSView {
 
         let d = status()
         let color = d.color, label = d.label, fraction = d.fraction
-        let cx = ringLeft + K.ring, cy = bounds.height / 2
+        let cx = ringLeft + K.ring, cy = body.midY
 
         if let fraction {  // countdown ring
             let track = NSBezierPath()
@@ -246,7 +294,7 @@ final class IslandView: NSView {
             let attrs: [NSAttributedString.Key: Any] = [.font: K.font, .foregroundColor: NSColor(white: 1, alpha: r)]
             let s = label as NSString
             let th = s.size(withAttributes: attrs).height
-            s.draw(at: NSPoint(x: textX - 6 * (1 - r), y: (bounds.height - th) / 2), withAttributes: attrs)
+            s.draw(at: NSPoint(x: textX - 6 * (1 - r), y: body.minY + (body.height - th) / 2), withAttributes: attrs)
             NSGraphicsContext.restoreGraphicsState()
         }
     }
@@ -287,6 +335,7 @@ final class IslandController {
         let g = Geometry.current()
         view = IslandView(watcher: watcher, height: g.height)
         view.notch = g.notch
+        view.join = g.join
         width = view.compactWidth
         panel = NSPanel(
             contentRect: NSRect(x: g.x, y: g.y, width: width, height: g.height),
@@ -305,9 +354,9 @@ final class IslandController {
 
     /// Show or hide the light next to the camera. Hidden, it costs nothing: the animation timer stops.
     func setVisible(_ visible: Bool) {
+        geometryAt = 0  // re-read the size now, in case it just changed in Settings
         if visible {
             guard timer == nil else { return }
-            geometryAt = 0
             panel.orderFrontRegardless()
             view.onHoverChange = { [weak self] in self?.run(at: 60) }
             run(at: 15)
@@ -339,6 +388,7 @@ final class IslandController {
         }
         let g = geometry
         view.notch = g.notch
+        view.join = g.join
 
         let target = view.targetWidth
         IslandView.spring(width: &width, velocity: &velocity, target: target, dt: dt)
