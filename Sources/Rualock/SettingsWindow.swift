@@ -2,7 +2,8 @@ import AppKit
 import AVFoundation
 import SwiftUI
 
-/// Rualock Settings, laid out like System Settings: a grouped form in sections.
+/// Rualock Settings, laid out like System Settings: a sidebar of panes with coloured icons, the
+/// pane's name in the toolbar, and each pane a grouped form.
 final class SettingsWindowController: NSWindowController {
     private let model: SettingsModel
 
@@ -10,13 +11,14 @@ final class SettingsWindowController: NSWindowController {
         model = SettingsModel(onReenroll: onReenroll, onDisplayChange: onDisplayChange)
         let host = NSHostingController(rootView: SettingsView(model: model))
         host.sizingOptions = []
+        host.sceneBridgingOptions = [.title, .toolbars]  // the pane's title and the sidebar go in the toolbar
         let window = NSWindow(contentViewController: host)
-        window.title = "Rualock Settings"
-        window.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
-        window.titlebarSeparatorStyle = .none
-        window.setContentSize(NSSize(width: 520, height: 780))
-        window.contentMinSize = NSSize(width: 520, height: 420)
-        window.contentMaxSize = NSSize(width: 520, height: 1200)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.toolbarStyle = .unified
+        window.title = "Rualock"
+        window.setContentSize(NSSize(width: 760, height: 580))
+        window.contentMinSize = NSSize(width: 680, height: 460)
+        window.setFrameAutosaveName("RualockSettings")
         super.init(window: window)
         model.closeWindow = { [weak self] in self?.close() }
     }
@@ -26,13 +28,49 @@ final class SettingsWindowController: NSWindowController {
     func present() {
         model.reload()
         NSApp.activate(ignoringOtherApps: true)
-        window?.center()
+        if window?.isVisible == false { window?.center() }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
     }
 
     /// Match the controls to the preferences (they can change from the menu bar icon, too).
     func refresh() { model.reload() }
+
+    func select(_ pane: SettingsPane) { model.pane = pane }
+}
+
+/// The panes in the sidebar.
+enum SettingsPane: String, CaseIterable, Identifiable {
+    case general, light, permissions, diagnostics
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .light: return "Status Light"
+        case .permissions: return "Permissions"
+        case .diagnostics: return "Diagnostics"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .general: return "lock.fill"
+        case .light: return "circle.fill"
+        case .permissions: return "hand.raised.fill"
+        case .diagnostics: return "chart.bar.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .general: return .blue
+        case .light: return .green
+        case .permissions: return .indigo
+        case .diagnostics: return .gray
+        }
+    }
 }
 
 /// The settings as the form shows them. Writes go straight to `Prefs`; the ones that weaken
@@ -52,7 +90,7 @@ final class SettingsModel: ObservableObject {
     @Published var corner = Prefs.islandCorner
     @Published var ear = Prefs.islandEar
     @Published var join = Prefs.islandJoin
-    @Published var advanced = false
+    @Published var pane: SettingsPane? = .general
     @Published var canBlockAll = InputBlocker.allowed
     @Published var cameraAllowed = SettingsModel.cameraAuthorized
 
@@ -202,12 +240,85 @@ final class SettingsModel: ObservableObject {
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
 
-    private func bind<T>(_ get: @escaping () -> T, _ set: @escaping (T) -> Void) -> Binding<T> {
-        Binding(get: get, set: set)
+    var body: some View {
+        NavigationSplitView {
+            List(SettingsPane.allCases, selection: $model.pane) { pane in
+                Label {
+                    Text(pane.title)
+                } icon: {
+                    IconTile(symbol: pane.symbol, tint: pane.tint)
+                }
+                .tag(pane)
+            }
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
+            .toolbar(removing: .sidebarToggle)
+        } detail: {
+            let pane = model.pane ?? .general
+            Group {
+                switch pane {
+                case .general: GeneralPane(model: model)
+                case .light: StatusLightPane(model: model)
+                case .permissions: PermissionsPane(model: model)
+                case .diagnostics: DiagnosticsPane(model: model)
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle(pane.title)
+        }
+        // Permissions are granted in System Settings: notice when they change.
+        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in model.pollPermissions() }
     }
+}
+
+private func bind<T>(_ get: @escaping () -> T, _ set: @escaping (T) -> Void) -> Binding<T> {
+    Binding(get: get, set: set)
+}
+
+/// A white symbol on a rounded, coloured square, like the icons in System Settings.
+private struct IconTile: View {
+    let symbol: String
+    let tint: Color
+    var size: CGFloat = 20
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.5, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(tint.gradient, in: RoundedRectangle(cornerRadius: size * 0.27, style: .continuous))
+    }
+}
+
+/// "Allowed" with a tick, or a button that asks for the permission.
+@ViewBuilder
+private func permission(_ granted: Bool, action: @escaping () -> Void) -> some View {
+    if granted {
+        Label("Allowed", systemImage: "checkmark.circle.fill")
+            .foregroundStyle(.green)
+    } else {
+        Button("Allow…", action: action)
+    }
+}
+
+private struct GeneralPane: View {
+    @ObservedObject var model: SettingsModel
 
     var body: some View {
         Form {
+            Section {
+                HStack(spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Rualock").font(.title2.weight(.semibold))
+                        Text("Locks your Mac the moment you walk away.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+
             Section {
                 Picker("When you leave", selection: bind({ model.freeze }, model.setFreeze)) {
                     Text("Lock the Mac").tag(false)
@@ -218,32 +329,54 @@ struct SettingsView: View {
                 }
                 if model.freeze {
                     LabeledContent {
-                        if model.canBlockAll {
-                            Label("On", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                        } else {
-                            Button("Allow Accessibility…") { InputBlocker.requestAccess() }
-                        }
+                        permission(model.canBlockAll) { InputBlocker.requestAccess() }
                     } label: {
                         Text("Block all input")
                         Text(model.canBlockAll
                              ? "Keys, clicks, the cursor, gestures and system shortcuts all stop."
-                             : "Without Accessibility access, only clicks and typing stop; gestures and Spotlight still work.")
+                             : "Needs Accessibility access. Without it, only clicks and typing stop.")
                     }
                 }
             } footer: {
                 if model.freeze {
-                    Text("The screen looks unlocked, but nothing responds until Rualock sees your face and a blink. To get in without it, press ⌃⌘Q (or the power button) to lock, then unlock as usual. A prank, not a lock.")
+                    Text("The screen looks unlocked, but nothing responds until Rualock sees your face and a blink. To get in without it, press ⌃⌘Q to lock, then unlock as usual. A prank, not a lock.")
                         .settingsFooter()
                 }
             }
 
-            Section {
+            Section("Security") {
                 Toggle(isOn: bind({ model.blink }, model.setBlink)) {
                     Text("Require a blink")
                     Text("So a photo can't stand in for you. Turning it off needs Touch ID.")
                 }
-            } header: {
-                Text("Security")
+                LabeledContent {
+                    Button("Re-enrol…", action: model.reenroll)
+                } label: {
+                    Text("Your face")
+                    Text("Learn your face again, for new glasses or lighting.")
+                }
+            }
+
+            Section {
+                Toggle("Open at login", isOn: bind({ model.startsAtLogin }, model.setStartsAtLogin))
+            } footer: {
+                Text("Rualock \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
+                    .settingsFooter()
+            }
+        }
+    }
+}
+
+private struct StatusLightPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Form {
+            Section {
+                IslandPreview(look: [model.shownHeight, model.dot, model.text, model.corner, model.ear, model.join])
+                    .frame(height: 110)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .listRowInsets(EdgeInsets())
             }
 
             Section {
@@ -251,110 +384,208 @@ struct SettingsView: View {
                     .disabled(!model.showMenuBar)
                 Toggle("In the menu bar", isOn: bind({ model.showMenuBar }, { model.setShow(menuBar: $0) }))
                     .disabled(!model.showIsland)
+            } header: {
+                Text("Show")
+            } footer: {
+                Text("At least one stays on, so you can always reach Rualock's menu.").settingsFooter()
+            }
+
+            Section {
                 Picker("Style", selection: bind({ model.style }, model.setStyle)) {
                     ForEach(IslandStyle.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
-                .disabled(!model.showIsland)
             } header: {
-                Text("Status light")
+                Text("Look")
             }
 
             Section {
-                DisclosureGroup("Advanced", isExpanded: $model.advanced) {
-                    sizeSlider("Height", value: model.shownHeight, range: model.heightRange, set: model.setHeight,
-                               label: model.shownHeight >= model.heightRange.upperBound - 0.25 ? "Notch" : points(model.shownHeight))
-                    sizeSlider("Dot", value: model.dot, range: Prefs.islandDotSizes, set: model.setDot, label: points(model.dot))
-                    sizeSlider("Text", value: model.text, range: Prefs.islandTextSizes, set: model.setText, label: points(model.text))
-                    sizeSlider("Corner radius", value: model.corner, range: Prefs.islandCornerSizes, set: model.setCorner, label: points(model.corner))
-                    sizeSlider("Top flare", value: model.ear, range: Prefs.islandFlareSizes, set: model.setEar, label: points(model.ear))
-                    sizeSlider("Notch join", value: model.join, range: Prefs.islandFlareSizes, set: model.setJoin, label: points(model.join))
-                        .disabled(!model.showIsland || model.shownHeight >= model.heightRange.upperBound - 0.25)
-                }
+                let atNotch = model.shownHeight >= model.heightRange.upperBound - 0.25
+                SizeSlider("Height", value: model.shownHeight, range: model.heightRange, set: model.setHeight,
+                           label: atNotch ? "Notch" : points(model.shownHeight))
+                SizeSlider("Dot", value: model.dot, range: Prefs.islandDotSizes, set: model.setDot, label: points(model.dot))
+                SizeSlider("Text", value: model.text, range: Prefs.islandTextSizes, set: model.setText, label: points(model.text))
+                SizeSlider("Corner radius", value: model.corner, range: Prefs.islandCornerSizes, set: model.setCorner, label: points(model.corner))
+                SizeSlider("Top flare", value: model.ear, range: Prefs.islandFlareSizes, set: model.setEar, label: points(model.ear))
+                SizeSlider("Notch join", value: model.join, range: Prefs.islandFlareSizes, set: model.setJoin, label: points(model.join))
+                    .disabled(atNotch)
+            } header: {
+                Text("Fine-tune")
             } footer: {
-                if model.advanced {
-                    Text("Corner radius rounds the light's outer bottom corner. Top flare curves it into the top of the screen, and Notch join into the side of the notch below it (only while the light is shorter than the notch). Moving any slider makes the style Custom.")
-                        .settingsFooter()
-                }
-            }
-
-            Section {
-                LabeledContent {
-                    permission(model.cameraAllowed, "Allow…", action: System.openCameraPrivacySettings)
-                } label: {
-                    Text("Camera")
-                    Text("To see your face. Rualock doesn't work without it.")
-                }
-                LabeledContent {
-                    permission(model.canBlockAll, "Allow…") { InputBlocker.requestAccess() }
-                } label: {
-                    Text("Accessibility")
-                    Text("Lets freeze mode block all input: keys, clicks, the cursor, gestures and shortcuts.")
-                }
-            } header: {
-                Text("Permissions")
-            }
-
-            Section {
-                Toggle("Start Rualock when you log in", isOn: bind({ model.startsAtLogin }, model.setStartsAtLogin))
-                LabeledContent("Your face") {
-                    Button("Re-enrol…", action: model.reenroll)
-                }
-            } header: {
-                Text("General")
-            }
-
-            Section {
-                Toggle(isOn: bind({ model.diagnostics }, model.setDiagnostics)) {
-                    Text("Record diagnostics for tuning")
-                    Text("Numbers only, kept on this Mac for 14 days.")
-                }
-                LabeledContent("Diagnostics folder") {
-                    Button("Show in Finder", action: model.showDiagnosticsFolder)
-                }
-            } header: {
-                Text("Diagnostics")
-            } footer: {
-                Text("Rualock \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev")")
+                Text("Corner radius rounds the outer bottom corner. Top flare curves the light into the top of the screen; Notch join curves it into the side of the notch below (only while it's shorter than the notch). Moving a slider switches the style to Custom.")
                     .settingsFooter()
-                    .frame(maxWidth: .infinity)
             }
         }
-        .formStyle(.grouped)
-        .frame(minWidth: 520, minHeight: 420)
-        // Accessibility is granted in System Settings: notice when it changes.
-        .onReceive(Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()) { _ in model.pollPermissions() }
-    }
-
-    /// "Allowed" with a tick, or a button that asks for the permission.
-    @ViewBuilder
-    private func permission(_ granted: Bool, _ title: String, action: @escaping () -> Void) -> some View {
-        if granted {
-            Label("Allowed", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-        } else {
-            Button(title, action: action)
-        }
+        .disabled(!model.showIsland)
     }
 
     private func points(_ v: Double) -> String { String(format: "%g pt", v) }
+}
 
-    /// A slider that changes the light as you drag, with its value beside it.
-    private func sizeSlider(_ title: String, value: Double, range: ClosedRange<Double>, set: @escaping (Double) -> Void,
-                            label: String) -> some View {
+/// A slider that changes the light as you drag, with its value beside it.
+private struct SizeSlider: View {
+    let title: String, value: Double, range: ClosedRange<Double>, set: (Double) -> Void, label: String
+
+    init(_ title: String, value: Double, range: ClosedRange<Double>, set: @escaping (Double) -> Void, label: String) {
+        (self.title, self.value, self.range, self.set, self.label) = (title, value, range, set, label)
+    }
+
+    var body: some View {
         LabeledContent(title) {
             HStack(spacing: 10) {
                 Slider(value: bind({ value }, set), in: range) { editing in
                     if !editing { note("status light \(title.lowercased()): \(label)") }
                 }
                 .labelsHidden()
-                .frame(width: 180)
+                .frame(width: 220)
                 Text(label)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
-                    .frame(width: 48, alignment: .trailing)
+                    .frame(width: 52, alignment: .trailing)
             }
         }
-        .disabled(!model.showIsland)
+    }
+}
+
+private struct PermissionsPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent {
+                    permission(model.cameraAllowed, action: System.openCameraPrivacySettings)
+                } label: {
+                    Label {
+                        Text("Camera")
+                        Text("To see your face. Rualock doesn't work without it.")
+                    } icon: {
+                        IconTile(symbol: "video.fill", tint: .green)
+                    }
+                }
+                LabeledContent {
+                    permission(model.canBlockAll) { InputBlocker.requestAccess() }
+                } label: {
+                    Label {
+                        Text("Accessibility")
+                        Text("Lets freeze mode block all input: keys, clicks, the cursor, gestures and shortcuts.")
+                    } icon: {
+                        IconTile(symbol: "accessibility", tint: .blue)
+                    }
+                }
+            } footer: {
+                Text("Allow… opens Privacy & Security in System Settings. Turn Rualock on there, and this page updates by itself.")
+                    .settingsFooter()
+            }
+        }
+    }
+}
+
+private struct DiagnosticsPane: View {
+    @ObservedObject var model: SettingsModel
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: bind({ model.diagnostics }, model.setDiagnostics)) {
+                    Text("Record diagnostics for tuning")
+                    Text("Numbers only, kept on this Mac for 14 days. No images, no face data.")
+                }
+                LabeledContent("Diagnostics folder") {
+                    Button("Show in Finder", action: model.showDiagnosticsFolder)
+                }
+            } footer: {
+                Text("Run Rualock with --report to summarise why it locked and how often a lock was probably false.")
+                    .settingsFooter()
+            }
+        }
+    }
+}
+
+/// The status light as it looks beside the notch, with your current sizes, opened as on hover.
+private struct IslandPreview: NSViewRepresentable {
+    /// The sizes it's drawn with; any change redraws it. (The light reads them from `Prefs` itself.)
+    let look: [Double]
+
+    func makeNSView(context: Context) -> PreviewCanvas { PreviewCanvas() }
+
+    func updateNSView(_ canvas: PreviewCanvas, context: Context) {
+        canvas.needsLayout = true
+        canvas.island.needsDisplay = true
+    }
+}
+
+private final class PreviewStatus: IslandStatus {
+    var state: Watcher.State = .watching
+    var absentFor: TimeInterval = 0
+    var lockDelay: TimeInterval = 8
+    var pauseWindow: (started: Date, until: Date)? = nil
+}
+
+/// A strip of desktop and menu bar with a notch, and the light growing out of it, at twice its real
+/// size so the corners are easy to see.
+final class PreviewCanvas: NSView {
+    private static let zoom: CGFloat = 2
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        setBoundsSize(NSSize(width: newSize.width / Self.zoom, height: newSize.height / Self.zoom))
+    }
+
+    private let status = PreviewStatus()
+    let island: IslandView
+    private let notchView = NotchShape()
+    private static let notchWidth: CGFloat = 110
+
+    /// This Mac's notch height, or a typical one.
+    private var notchHeight: CGFloat { NSScreen.screens.map(\.safeAreaInsets.top).max().flatMap { $0 > 0 ? $0 : nil } ?? 32 }
+
+    override init(frame: NSRect) {
+        island = IslandView(watcher: status, height: 21)
+        super.init(frame: frame)
+        island.notch = true
+        island.hover = true
+        island.clock = { 0.7 }  // a still frame of the glow
+        addSubview(island)
+        addSubview(notchView)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let top = notchHeight
+        let h = IslandView.height(notch: top), j = IslandView.join(notch: top, height: h)
+        let notchLeft = bounds.midX - Self.notchWidth / 2 - 50
+        let notchRight = notchLeft + Self.notchWidth
+        notchView.frame = NSRect(x: notchLeft, y: bounds.maxY - top, width: Self.notchWidth, height: top)
+        island.join = j
+        island.frame = NSRect(x: notchRight - IslandView.notchOverlap, y: bounds.maxY - h - j,
+                              width: island.expandedWidth, height: h + j)
+        island.needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSGradient(colors: [NSColor(srgbRed: 0.18, green: 0.2, blue: 0.42, alpha: 1), NSColor(srgbRed: 0.75, green: 0.36, blue: 0.42, alpha: 1)])?
+            .draw(in: bounds, angle: 0)
+        NSColor(white: 0, alpha: 0.18).setFill()
+        NSRect(x: 0, y: bounds.maxY - notchHeight, width: bounds.width, height: notchHeight).fill()  // the menu bar
+    }
+}
+
+/// The camera housing: black, with rounded bottom corners.
+private final class NotchShape: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let r: CGFloat = 10, b = bounds
+        let p = NSBezierPath()
+        p.move(to: NSPoint(x: b.minX, y: b.maxY))
+        p.line(to: NSPoint(x: b.maxX, y: b.maxY))
+        p.line(to: NSPoint(x: b.maxX, y: b.minY + r))
+        p.curve(to: NSPoint(x: b.maxX - r, y: b.minY), controlPoint1: NSPoint(x: b.maxX, y: b.minY + r * 0.45), controlPoint2: NSPoint(x: b.maxX - r * 0.45, y: b.minY))
+        p.line(to: NSPoint(x: b.minX + r, y: b.minY))
+        p.curve(to: NSPoint(x: b.minX, y: b.minY + r), controlPoint1: NSPoint(x: b.minX + r * 0.45, y: b.minY), controlPoint2: NSPoint(x: b.minX, y: b.minY + r * 0.45))
+        p.close()
+        NSColor.black.setFill()
+        p.fill()
     }
 }
 

@@ -135,7 +135,7 @@ final class InputBlocker {
     /// the first time), and opens that pane unless `openPane` is false.
     static func requestAccess(openPane: Bool = true) {
         _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
-        if openPane { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) }
+        if openPane { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility")!) }
     }
 
     /// Starts blocking; false if Rualock doesn't have Accessibility access.

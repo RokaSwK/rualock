@@ -199,8 +199,12 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
                 settings.present()
                 self.after(0.8) {
                     self.capture(settings.window, "settings")
-                    settings.close()
-                    self.menuBarShot()
+                    settings.select(.light)
+                    self.after(0.8) {
+                        self.capture(settings.window, "settings-light")
+                        settings.close()
+                        self.menuBarShot()
+                    }
                 }
             }
         }
