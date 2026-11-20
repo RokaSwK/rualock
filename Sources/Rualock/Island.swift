@@ -103,7 +103,7 @@ extension IslandStatus {
         case .locked:
             return StatusDisplay(grey, "Locked", nil)
         case .frozen:
-            return StatusDisplay(grey, "Frozen · look at the camera", nil)
+            return StatusDisplay(red, "Frozen · look at the camera", nil)
         case .noCamera:
             return StatusDisplay(red, "No camera", nil)
         case .cameraDenied:
