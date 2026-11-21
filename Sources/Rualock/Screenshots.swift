@@ -35,6 +35,7 @@ final class Screenshots: NSObject, NSApplicationDelegate, IslandActions {
         // Render with default settings whatever yours are (the argument domain wins, and isn't saved).
         UserDefaults.standard.setVolatileDomain([
             "lockDelay": 8.0, "requireBlink": true, "showIsland": true, "showMenuBarIcon": true, "recordDiagnostics": true, "islandStyle": "standard", "freezeInstead": false,
+            "typingLimit": 90.0, "blinkGrace": 10.0, "matchStrictness": "standard",
         ], forName: UserDefaults.argumentDomain)
     }
 

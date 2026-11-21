@@ -83,6 +83,9 @@ final class SettingsModel: ObservableObject {
     @Published var startsAtLogin = System.startsAtLogin
     @Published var diagnostics = Prefs.recordDiagnostics
     @Published var lockDelay = Prefs.lockDelay
+    @Published var typingLimit = Prefs.typingLimit
+    @Published var blinkGrace = Prefs.blinkGrace
+    @Published var strictness = Prefs.matchStrictness
     @Published var height = Prefs.islandHeight
     @Published var dot = Prefs.islandDot
     @Published var text = Prefs.islandText
@@ -111,6 +114,9 @@ final class SettingsModel: ObservableObject {
         startsAtLogin = System.startsAtLogin
         diagnostics = Prefs.recordDiagnostics
         lockDelay = Prefs.lockDelay
+        typingLimit = Prefs.typingLimit
+        blinkGrace = Prefs.blinkGrace
+        strictness = Prefs.matchStrictness
         height = Prefs.islandHeight
         dot = Prefs.islandDot
         text = Prefs.islandText
@@ -165,6 +171,32 @@ final class SettingsModel: ObservableObject {
         note("lock delay set to \(Int(seconds))s")
     }
 
+    func setTypingLimit(_ seconds: Double) {
+        Prefs.typingLimit = seconds
+        typingLimit = seconds
+        note(seconds > 0 ? "typing keeps you present for up to \(Int(seconds))s" : "typing no longer keeps you present")
+    }
+
+    func setBlinkGrace(_ seconds: Double) {
+        Prefs.blinkGrace = seconds
+        blinkGrace = seconds
+        note("time to blink set to \(Int(seconds))s")
+    }
+
+    /// A looser match weakens protection, so it needs Touch ID like turning the blink check off does.
+    func setStrictness(_ s: MatchStrictness) {
+        let apply = { [weak self] in
+            Prefs.matchStrictness = s
+            self?.strictness = s
+            note("face match: \(s.rawValue) (threshold \(Prefs.threshold))")
+        }
+        guard s == .relaxed, Prefs.matchStrictness != .relaxed else { return apply() }
+        objectWillChange.send()  // the control stays where it was until Touch ID succeeds
+        System.authenticate("relax how closely a face must match yours in Rualock") { ok in
+            if ok { apply() }
+        }
+    }
+
     /// Turning the blink check off weakens protection, so it needs Touch ID like pausing does.
     func setBlink(_ on: Bool) {
         guard !on else {
@@ -182,11 +214,18 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    /// One of the two must stay on, or you'd have no way back to the menu short of opening the app again.
-    func setShow(island: Bool? = nil, menuBar: Bool? = nil) {
-        if let island { Prefs.showIsland = island }
-        if let menuBar { Prefs.showMenuBarIcon = menuBar }
-        if !Prefs.showIsland && !Prefs.showMenuBarIcon { Prefs.showIsland = true }
+    /// Where Rualock shows itself. There's no "neither": you'd have no way back to the menu.
+    var show: ShowPlace {
+        switch (showIsland, showMenuBar) {
+        case (true, false): return .light
+        case (false, true): return .menuBar
+        default: return .both
+        }
+    }
+
+    func setShow(_ place: ShowPlace) {
+        Prefs.showIsland = place != .menuBar
+        Prefs.showMenuBarIcon = place != .light
         showIsland = Prefs.showIsland
         showMenuBar = Prefs.showMenuBarIcon
         note("show: status light \(showIsland ? "on" : "off"), menu bar icon \(showMenuBar ? "on" : "off")")
@@ -270,6 +309,31 @@ struct SettingsView: View {
     }
 }
 
+/// Where Rualock shows itself: the light next to the camera, the menu bar icon, or both.
+enum ShowPlace: CaseIterable {
+    case light, both, menuBar
+
+    var title: String {
+        switch self {
+        case .light: return "Next to the camera"
+        case .both: return "Both"
+        case .menuBar: return "Menu bar"
+        }
+    }
+
+    var footer: String {
+        switch self {
+        case .light: return "The status light grows out of the notch; click it for Rualock's menu."
+        case .both: return "The status light by the notch and an icon in the menu bar, both with Rualock's menu."
+        case .menuBar: return "Just an icon in the menu bar, like any other menu bar app."
+        }
+    }
+}
+
+private func duration(_ seconds: Double) -> String {
+    seconds == 0 ? "Off" : seconds < 60 || seconds.truncatingRemainder(dividingBy: 60) != 0 ? "\(Int(seconds)) s" : "\(Int(seconds / 60)) min"
+}
+
 private func bind<T>(_ get: @escaping () -> T, _ set: @escaping (T) -> Void) -> Binding<T> {
     Binding(get: get, set: set)
 }
@@ -324,9 +388,13 @@ private struct GeneralPane: View {
                     Text("Lock the Mac").tag(false)
                     Text("Freeze the screen (prank)").tag(true)
                 }
-                Picker("After", selection: bind({ model.lockDelay }, model.setLockDelay)) {
-                    ForEach(Prefs.lockDelays, id: \.self) { Text("\(Int($0)) seconds").tag($0) }
+                Picker(selection: bind({ model.lockDelay }, model.setLockDelay)) {
+                    ForEach(Prefs.lockDelays, id: \.self) { Text("\(Int($0)) s").tag($0) }
+                } label: {
+                    Text("After")
+                    Text("How long your face can be gone before it happens.")
                 }
+                .pickerStyle(.segmented)
                 if model.freeze {
                     LabeledContent {
                         permission(model.canBlockAll) { InputBlocker.requestAccess() }
@@ -344,11 +412,36 @@ private struct GeneralPane: View {
                 }
             }
 
+            Section("Staying unlocked") {
+                Picker(selection: bind({ model.typingLimit }, model.setTypingLimit)) {
+                    ForEach(Prefs.typingLimits, id: \.self) { Text(duration($0)).tag($0) }
+                } label: {
+                    Text("Typing keeps you here")
+                    Text("While you look down at the keyboard, typing and the mouse count as you, for up to this long.")
+                }
+                .pickerStyle(.segmented)
+                Picker(selection: bind({ model.blinkGrace }, model.setBlinkGrace)) {
+                    ForEach(Prefs.blinkGraces, id: \.self) { Text("\(Int($0)) s").tag($0) }
+                } label: {
+                    Text("Time to blink")
+                    Text("Extra time before locking when your face comes back and still has to blink.")
+                }
+                .pickerStyle(.segmented)
+                .disabled(!model.blink)
+            }
+
             Section("Security") {
                 Toggle(isOn: bind({ model.blink }, model.setBlink)) {
                     Text("Require a blink")
                     Text("So a photo can't stand in for you. Turning it off needs Touch ID.")
                 }
+                Picker(selection: bind({ model.strictness }, model.setStrictness)) {
+                    ForEach(MatchStrictness.allCases, id: \.self) { Text($0.title).tag($0) }
+                } label: {
+                    Text("Face match")
+                    Text("How closely a face must match yours. Strict suits good light; Relaxed needs Touch ID.")
+                }
+                .pickerStyle(.segmented)
                 LabeledContent {
                     Button("Re-enrol…", action: model.reenroll)
                 } label: {
@@ -373,21 +466,20 @@ private struct StatusLightPane: View {
     var body: some View {
         Form {
             Section {
+                Picker("Show Rualock", selection: bind({ model.show }, model.setShow)) {
+                    ForEach(ShowPlace.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text(model.show.footer).settingsFooter()
+            }
+
+            Section {
                 IslandPreview(look: [model.shownHeight, model.dot, model.text, model.corner, model.ear, model.join])
                     .frame(height: 110)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .listRowInsets(EdgeInsets())
-            }
-
-            Section {
-                Toggle("Next to the camera", isOn: bind({ model.showIsland }, { model.setShow(island: $0) }))
-                    .disabled(!model.showMenuBar)
-                Toggle("In the menu bar", isOn: bind({ model.showMenuBar }, { model.setShow(menuBar: $0) }))
-                    .disabled(!model.showIsland)
-            } header: {
-                Text("Show")
-            } footer: {
-                Text("At least one stays on, so you can always reach Rualock's menu.").settingsFooter()
+                    .opacity(model.showIsland ? 1 : 0.4)
             }
 
             Section {
@@ -397,6 +489,7 @@ private struct StatusLightPane: View {
             } header: {
                 Text("Look")
             }
+            .disabled(!model.showIsland)
 
             Section {
                 let atNotch = model.shownHeight >= model.heightRange.upperBound - 0.25
@@ -414,8 +507,8 @@ private struct StatusLightPane: View {
                 Text("Corner radius rounds the outer bottom corner. Top flare curves the light into the top of the screen; Notch join curves it into the side of the notch below (only while it's shorter than the notch). Moving a slider switches the style to Custom.")
                     .settingsFooter()
             }
+            .disabled(!model.showIsland)
         }
-        .disabled(!model.showIsland)
     }
 
     private func points(_ v: Double) -> String { String(format: "%g pt", v) }
