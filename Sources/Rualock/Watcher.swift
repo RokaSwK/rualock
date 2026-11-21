@@ -11,7 +11,6 @@ final class Watcher {
     private enum Seen { case you, unverified, nobody }
 
     /// Extra time to blink when a matching face appears after a gap (looking back, after a pause).
-    static let blinkGrace: TimeInterval = 10
     /// After an unlock, the first matching face within this long is trusted without a blink.
     static let unlockTrust: TimeInterval = 10
     /// Recognition runs at most this often; blink tracking runs on every frame.
@@ -90,7 +89,8 @@ final class Watcher {
         Diagnostics.shared.event("start", [
             "version": version, "lockDelay": Prefs.lockDelay, "threshold": Double(Prefs.threshold),
             "requireBlink": Prefs.requireBlink, "freezeInstead": Prefs.freezeInstead, "dryRun": Prefs.dryRun,
-            "samples": embeddings.count,
+            "samples": embeddings.count, "typingLimit": Prefs.typingLimit, "blinkGrace": Prefs.blinkGrace,
+            "matchStrictness": Prefs.matchStrictness.rawValue,
         ])
         tick()
     }
@@ -236,7 +236,7 @@ final class Watcher {
         // The grace can't stretch the countdown past lock delay + blink grace from your last confirmed
         // sighting: it only stops a flicker from cutting it short.
         let waitingForBlink = seen == .unverified || lastUnverified.map { now.timeIntervalSince($0) <= Self.graceHold } ?? false
-        lockDelay = Prefs.lockDelay + (waitingForBlink ? Self.blinkGrace : 0)
+        lockDelay = Prefs.lockDelay + (waitingForBlink ? Prefs.blinkGrace : 0)
         absentFor = now.timeIntervalSince(presence)
         if absentFor >= lockDelay {
             let reason = waitingForBlink ? "no blink" : now.timeIntervalSince(lastSeen) > absentFor + 0.5 ? "input stopped" : "face gone"
@@ -298,6 +298,7 @@ final class Watcher {
     /// Let keyboard and mouse input carry on from your confirmed face (see `PresenceChain`).
     private func followInput(_ now: Date) {
         let idle = System.inputIdle
+        chain.limit = Prefs.typingLimit  // a change in Settings applies straight away
         let change = chain.update(now: now, faceInView: seen == .you, faceAt: lastConfirmed ?? .distantPast,
                                   lastInput: now.addingTimeInterval(-idle))
         switch change {
@@ -312,7 +313,7 @@ final class Watcher {
         lastSeen = Date()
         lastConfirmed = nil
         lastUnverified = nil
-        chain = PresenceChain(at: lastSeen)
+        chain = PresenceChain(at: lastSeen, limit: Prefs.typingLimit)
     }
 
     private func idle(_ s: State) {

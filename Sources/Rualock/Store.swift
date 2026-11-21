@@ -12,10 +12,32 @@ enum Prefs {
         set { d.set(newValue, forKey: "lockDelay") }
     }
 
-    /// Cosine similarity needed to count a face as yours (OpenCV's recommended value for SFace).
+    /// Cosine similarity needed to count a face as yours: the strictness setting, unless overridden
+    /// with `defaults write com.rualock.mac matchThreshold`.
     static var threshold: Float {
         let v = d.float(forKey: "matchThreshold")
-        return v > 0 ? v : 0.363
+        return v > 0 ? v : matchStrictness.threshold
+    }
+
+    static var matchStrictness: MatchStrictness {
+        get { d.string(forKey: "matchStrictness").flatMap(MatchStrictness.init) ?? .standard }
+        set { d.set(newValue.rawValue, forKey: "matchStrictness") }
+    }
+
+    static let typingLimits: [Double] = [0, 30, 90, 180]
+
+    /// How long keyboard and mouse use can keep you present without your face (0: never). See `PresenceChain`.
+    static var typingLimit: Double {
+        get { d.object(forKey: "typingLimit") as? Double ?? 90 }
+        set { d.set(newValue, forKey: "typingLimit") }
+    }
+
+    static let blinkGraces: [Double] = [5, 10, 20]
+
+    /// Extra seconds before locking while a face that matches you hasn't blinked yet.
+    static var blinkGrace: Double {
+        get { let v = d.double(forKey: "blinkGrace"); return v > 0 ? v : 10 }
+        set { d.set(newValue, forKey: "blinkGrace") }
     }
 
     /// Log "would lock" instead of locking. Set with `-dryRun YES` on the command line.
@@ -123,6 +145,28 @@ enum Prefs {
     static var didOfferLoginItem: Bool {
         get { d.bool(forKey: "didOfferLoginItem") }
         set { d.set(newValue, forKey: "didOfferLoginItem") }
+    }
+}
+
+/// How closely a face must match your enrolment. Your own scores are mostly 0.6-0.8; other people's
+/// mostly under 0.3.
+enum MatchStrictness: String, CaseIterable {
+    case relaxed, standard, strict
+
+    var title: String {
+        switch self {
+        case .relaxed: return "Relaxed"
+        case .standard: return "Standard"
+        case .strict: return "Strict"
+        }
+    }
+
+    var threshold: Float {
+        switch self {
+        case .relaxed: return 0.30
+        case .standard: return 0.363  // OpenCV's recommended value for SFace
+        case .strict: return 0.45
+        }
     }
 }
 

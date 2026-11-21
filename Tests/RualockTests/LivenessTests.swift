@@ -221,6 +221,13 @@ final class PresenceChainTests: XCTestCase {
         XCTAssertEqual(chain.presence, at(30))
     }
 
+    func testTypingCanBeTurnedOff() {
+        var chain = PresenceChain(at: t0, limit: 0)
+        XCTAssertNil(chain.update(now: at(1), faceInView: false, faceAt: t0, lastInput: at(1)))
+        XCTAssertFalse(chain.typing)
+        XCTAssertEqual(chain.presence, t0)
+    }
+
     func testAPauseInInputEndsIt() {
         var chain = PresenceChain(at: t0)
         _ = chain.update(now: at(1), faceInView: false, faceAt: t0, lastInput: at(1))

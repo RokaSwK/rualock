@@ -203,13 +203,17 @@ func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
 /// sits down after you leave can't pick it up; and it lasts at most `limit` without your face.
 struct PresenceChain {
     static let gap: TimeInterval = 3
-    static let limit: TimeInterval = 90
+    /// How long input can carry on without your face (Settings › Typing keeps you here); 0 turns it off.
+    var limit: TimeInterval = 90
 
     /// When you were last known to be here.
     private(set) var presence: Date
     private(set) var typing = false
 
-    init(at date: Date) { presence = date }
+    init(at date: Date, limit: TimeInterval = 90) {
+        presence = date
+        self.limit = limit
+    }
 
     /// `faceAt` is when your confirmed face was last in view; `lastInput` the latest keyboard or mouse
     /// event. Returns "start" or why it ended, when that changes.
@@ -219,14 +223,14 @@ struct PresenceChain {
             defer { typing = false }
             return typing ? "face back" : nil
         }
-        if lastInput > presence, lastInput.timeIntervalSince(presence) <= Self.gap, lastInput.timeIntervalSince(faceAt) <= Self.limit {
+        if lastInput > presence, lastInput.timeIntervalSince(presence) <= Self.gap, limit > 0, lastInput.timeIntervalSince(faceAt) <= limit {
             presence = lastInput
             defer { typing = true }
             return typing ? nil : "start"
         }
         if typing, now.timeIntervalSince(presence) > Self.gap {
             typing = false
-            return lastInput.timeIntervalSince(faceAt) > Self.limit ? "limit" : "input paused"
+            return lastInput.timeIntervalSince(faceAt) > limit ? "limit" : "input paused"
         }
         return nil
     }
